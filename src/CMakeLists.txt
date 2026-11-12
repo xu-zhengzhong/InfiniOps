@@ -892,7 +892,7 @@ if(WITH_TORCH)
     endif()
 
     execute_process(
-        COMMAND ${Python_EXECUTABLE} ${_torch_codegen_args}
+        COMMAND ${_TORCH_PYTHON} ${_torch_codegen_args}
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         RESULT_VARIABLE _torch_ops_result
     )
