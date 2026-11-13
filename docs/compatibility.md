@@ -81,8 +81,9 @@ Follow these rules when changing public C++ and Python surfaces:
 
 The [D0 contract](sparse/06-d0-contract.md) is frozen for implementation; sparse
 types and checked entry points are **not yet available** through the public
-headers or Python package. D0 is documentation-only. RT1-RT3 must implement,
-export, and validate the RT types before the dependent Ops API is published.
+headers or Python package. D0 is documentation-only; [RT1](sparse/07-rt1-implementation.md)
+now implements the RT types in source. RT2/RT3 must export and validate the
+installed types before the dependent Ops API is published.
 The existing `sparse_sampled_addmm` dense skeleton is not evidence of sparse
 support. OP6 introduces the canonical CSR signature and retains the dense
 overload temporarily for a migration diagnostic, as specified in
