@@ -1,6 +1,6 @@
 # 验证与验收方案
 
-以下是后续实现的测试设计，不是本次执行结果。本次实际完成的是源码审查、上游资料核查和文档检查；未构建 InfiniOps/InfiniRT，未执行新的稀疏算子。
+以下是后续实现的测试设计，不是运行结果。D0 已完成 [全部 38 项用例的契约走查](06-d0-contract.md#验证样例逐项走查)，并冻结状态、输出和生命周期预期；该记录不替代 RT3/OP4–GPU2 的执行证据。D0 未构建 InfiniOps/InfiniRT，未执行新的稀疏算子。
 
 ## 验证原则
 
@@ -29,7 +29,7 @@
 | S15 | `COO→CSR→COO` | coalesced 规范结果结构相等，显式零保留 |
 | S16 | COO/CSR SpMM，输出列数 0/1/多列，空内积维 | dense out 形状和值正确；reduce 非 sum 明确拒绝 |
 | S17 | sampled_addmm 显式零样例：crow=[0,2]、col=[0,1]、values=[0,2]，alpha=beta=1 | mat1=[[2,3]]、mat2=[[4,5],[6,7]] 时 values=[26,33]，pattern 不变 |
-| S18 | sampled_addmm alpha/beta 为 0、负数；values 含 NaN/Inf | 对照上游具体特殊值规则，特别 beta=0；不能仅测试有限正数 |
+| S18 | sampled_addmm alpha/beta 为 0、负数；values/operands 含 NaN/Inf；空内积 | 按 [D0 固定 CPU 特殊值规则](06-d0-contract.md#数值与特殊值冻结) 和解析样例验证；beta=0 不忽略 input NaN/Inf，GPU 单独验证 |
 | S19 | 不同 layout/dtype/rank/设备请求 | 能力诊断准确，无 dense fallback，无数据拷贝到其他设备 |
 | S20 | 未来 dense→sparse 含 ±0、NaN/Inf，或 hybrid 全零块 | 明确筛选语义；dense roundtrip 不等于恢复原 sparse pattern |
 | S21 | 未来 BSR/BSC block 2×3、维度不整除，batch 的 N 不一致 | 按 block/batch 不变量检查，nnz 计块，不计标量 |

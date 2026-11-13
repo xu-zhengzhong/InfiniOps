@@ -1,10 +1,10 @@
 # InfiniOps / InfiniRT 稀疏张量支持：分析与执行方案
 
-状态：设计建议，未实现。本文档集只增加分析和规划文档，不表示任何新增类型、算子或后端已可用。
+状态：**D0 / P0 契约已冻结，类型和算子尚未实现**。冻结决议和逐项走查见 [06 D0 接口契约](06-d0-contract.md)；不表示任何新增类型、算子或后端已可用。
 
 ## 结论与范围
 
-建议由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 InfiniOps 提供稀疏计算、格式转换、布局感知分派及 PyTorch 桥接**。保留现有 `TensorView` 和 `infini::ops::Tensor` 的稠密语义，先打通 COO / CSR 的 CPU 路径，再扩展 NVIDIA、CSC、BSR、BSC、batch 和 hybrid。
+D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 InfiniOps 提供稀疏计算、格式转换、布局感知分派及 PyTorch 桥接**。保留现有 `TensorView` 和 `infini::ops::Tensor` 的稠密语义，先打通 COO / CSR 的 CPU 路径，再扩展 NVIDIA、CSC、BSR、BSC、batch 和 hybrid。
 
 对齐对象是 PyTorch 的布局语义、组成张量、不变量、算子输入输出及后端能力约束；不复制其拥有型 `TensorImpl`、自动求导引擎或整个 dispatcher。首期明确只支持前向计算。完整布局规划和最小可交付范围分开列出，不能把首期称为“完整兼容 PyTorch sparse”。
 
@@ -19,6 +19,7 @@
 | [03 目标设计与接口契约](03-design.md) | 类型、所有权、校验、输出容量、分派、缓存和 stream 怎样协作 |
 | [04 分阶段执行计划](04-execution-plan.md) | 哪个仓库改哪些文件、依赖顺序、阶段出口、风险和决策 |
 | [05 验证与验收方案](05-validation.md) | 正确性、内存安全、并发、兼容性和性能怎样验证 |
+| [06 D0 接口契约](06-d0-contract.md) | 已冻结的类型/状态/checked entry/动态输出/alias/owner 决议，以及全部 38 项用例走查 |
 
 ## 分析基线
 
@@ -30,12 +31,12 @@
 | PyTorch API 文档 | [`2.9` 文档](https://docs.pytorch.org/docs/2.9/sparse.html)；实现细节以对应 tag 源码为准 |
 | 核查日期 | 2026-11-04；最终文档复核于 2026-11-05 |
 
-仓库行号指上述提交的定位起点。文中“现有”描述已读源码，“建议/拟新增”描述未来工作，“待验证”表示本次未运行对应后端。在线版本文档可能补订，源码 tag 用于复核差异。本次没有编译两个仓库，也没有运行或实现新的稀疏算子。
+仓库行号指上述分析提交的定位起点。文中“现有”描述已读源码，“建议/拟新增”描述未来工作，“待验证”表示未运行对应后端。D0 于 2026-11-12 冻结首期决议，工作基线与固定源码补读记录见 06；早期建议措辞不覆盖 D0 决议。在线版本文档可能补订，源码 tag 用于复核差异。D0 没有编译两个仓库，也没有运行或实现新的稀疏算子。
 
-## 推荐的首个交付边界
+## D0 冻结的首个交付边界
 
 - 非 batch、非 hybrid 的二维 COO / CSR；COO 使用 int64 索引，CSR 使用匹配的 int32 或 int64 索引。
-- CPU float32 / float64；结构描述可表达其他 value dtype，但计算支持须逐项声明。
+- CPU float32 / float64，组件及 dense operands/out 连续、负 stride 拒绝；结构描述可表达其他 value dtype，但计算支持须逐项声明。
 - 外部组件构造、组件访问、校验、COO coalesce、COO / CSR 转稠密、二维 COO 与 CSR 互转、COO / CSR × dense 的矩阵乘，以及 CSR sampled_addmm。
 - C++ 公共入口、Python 输入桥接、明确的错误和生命周期契约；原生 CPU 路径无需启用 Torch provider，Torch 用于对照及可选 provider。
 - 为后续动态输出建立容量/实际 nnz 协议；dense → sparse 排在该协议稳定之后。
@@ -49,4 +50,4 @@
 3. 稀疏结构分析依赖索引内容，不能复用只按 shape / dtype / strides 的缓存。
 4. 稀疏结果的实际 nnz 可能运行后才能确定，必须先定义输出容量、结果元数据和异步完成方式。
 
-决策、替代方案与可检验的交付条件均列在后续文档中；本次无需提前选择供应商库或申请额外实现范围。
+决策和可检验的交付条件已在 D0 冻结；RT1/OP1 起仍须实际实现和验证这四项，不把文档完成当作运行能力。供应商库选择留给相应后端任务。

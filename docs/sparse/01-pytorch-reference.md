@@ -111,3 +111,16 @@ autograd 支持取决于算子、参数、layout、backend 和 dtype。2.9 的 s
 本机 `/opt/pytorch/pytorch` 有源码，但 git 元数据不可用于确认提交，因此文档以公开固定 tag 链接为主要实现证据。后续 CI 必须安装固定测试基线并记录完整 `torch.__version__`、设备和依赖版本。
 
 有三份公开 tag 文件在本次浏览中未能取回：`native/sparse/ValidateCompressedIndicesCommon.h`、`native/sparse/SparseBlasImpl.cpp`、[native/cpu/SampledAddmmKernel.cpp](https://github.com/pytorch/pytorch/blob/v2.9.0/aten/src/ATen/native/cpu/SampledAddmmKernel.cpp)。链接仅作为后续阅读定位，不表示已成功读取该版本文件。本机对应源码已作辅助阅读；涉及其独有细节的实现任务，应在 P0/P1 的固定版本源码或测试环境中复核。sampled_addmm 的结构 mask 判断另有已读的 v2.9.0 `FunctionsManual.cpp` 及标明版本的本机探针支撑。
+
+## D0 固定版本复核
+
+2026-11-12 的 D0 补读已取回上述三份 v2.9.0 文件，以及 sampled_addmm 的 CPU 外层实现；上一节的取回失败记录保留为早期分析历史。本次通过官方 `raw.githubusercontent.com/pytorch/pytorch/v2.9.0/` 获取文件，不以其他版本源码代替：
+
+| 固定文件 | 本次确认 |
+| --- | --- |
+| [ValidateCompressedIndicesCommon.h](https://github.com/pytorch/pytorch/blob/v2.9.0/aten/src/ATen/native/sparse/ValidateCompressedIndicesCommon.h) | compressed 首末值、单调性、plain bounds、逐段严格有序且唯一；检查 compressed/plain 逻辑维度及 nnz 在 index dtype 中可表示 |
+| [SparseBlasImpl.cpp](https://github.com/pytorch/pytorch/blob/v2.9.0/aten/src/ATen/native/sparse/SparseBlasImpl.cpp) | 已取回并阅读；不能用其中普通 addmm/addmv 的 beta 分支推断 sampled_addmm |
+| [SampledAddmmKernel.cpp](https://github.com/pytorch/pytorch/blob/v2.9.0/aten/src/ATen/native/cpu/SampledAddmmKernel.cpp) | 遍历每个 CSR 存储项；scalar 转为 value dtype，逐项计算 alpha 乘点积加 beta 乘旧值，无零 scalar 忽略分支 |
+| [SparseBlas.cpp](https://github.com/pytorch/pytorch/blob/v2.9.0/aten/src/ATen/native/sparse/SparseBlas.cpp) | `sparse_sampled_addmm_out_sparse_csr_cpu` 先复制 input；空 operand 或零 nnz 时 values 乘 beta，否则调用上述 CPU kernel |
+
+由这两个 sampled_addmm 调用层可确定 CPU beta=0 仍传播 input NaN/Inf；alpha=0 的非空点积也不跳过 NaN/Inf。空内积只按 beta 缩放 input。这项源码推导已写入 [D0 数值契约](06-d0-contract.md#数值与特殊值冻结)，没有泛化成所有 GPU provider 的上游事实。D0 没有运行 v2.9.0 数值测试，后续 OP6/GPU1 仍须给出固定环境运行证据。

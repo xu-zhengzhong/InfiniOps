@@ -20,6 +20,11 @@ Please review these details before committing, especially for AI-generated code.
 1. Follow the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) strictly. Use the default `.clang-format`.
 2. Operator parameters: inputs first, outputs last. For naming, prefer PyTorch conventions, then ONNX, then CUDA APIs. Attributes go between inputs and outputs.
 3. Do not use exceptions. Use `assert` for error handling — debug builds will trigger assertion messages (which should include `__FILE__`, `__LINE__`, `__func__` at minimum), and release builds will have assertions compiled out.
+   The [sparse D0 checked boundary](docs/sparse/06-d0-contract.md) is a scoped
+   exception to the assertion rule: external sparse validation and execution
+   failures return explicit status in both Debug and Release; assertions check
+   internal invariants only. Framework exceptions are caught and translated at
+   the interoperability boundary, never propagated to C++ callers.
 4. Error and warning messages follow the [LLVM Coding Standards](https://llvm.org/docs/CodingStandards.html#error-and-warning-messages).
 5. Kernel file naming (excluding extension): custom kernels without a well-known algorithm name should be named `kernel`. Multiple implementations use `kernel_v2`, `kernel_v3`, etc. Well-known algorithms use the algorithm name (e.g. `flash_attention_v2`). Library-based implementations use the library name (e.g. `blas`).
 6. Separate kernel from kernel launcher. Launchers use `.h`. Kernels follow platform conventions (e.g. `.cuh`). Non-template kernels still require header/source separation (e.g. `.cuh` + `.cu`).

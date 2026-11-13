@@ -1,13 +1,13 @@
 # 目标设计与接口契约
 
-本文所有新类型和接口名称均为设计草案，不是现有 API。设计遵守仓库的 C++ 正式入口、输入/属性/输出分组、调用者提供输出缓冲区的原则；相对 PyTorch 的差异显式列出。
+本文是总体设计；首期类型职责、错误和执行协议已由 [D0 契约](06-d0-contract.md) 冻结，新类型和接口仍不是现有 API。早期建议与 D0 决议有差异时以 D0 为准。设计遵守仓库的 C++ 正式入口、输入/属性/输出分组、调用者提供输出缓冲区的原则；相对 PyTorch 的差异显式列出。
 
 ## 架构选择
 
 | 方案 | 收益 | 代价 | 决策 |
 | --- | --- | --- | --- |
 | 给现有 `TensorView` 塞入多布局 payload | 单一入参类型 | 改对象大小、ABI、hash、dense 热路径；旧 kernel 可能读错数据 | 首期不采用 |
-| 新增 `SparseTensorView`，组合现有组件视图 | 保持 dense 边界，改造可增量推进 | sparse 算子/生成器需要显式类型支持 | 推荐 |
+| 新增 `SparseTensorView`，组合现有组件视图 | 保持 dense 边界，改造可增量推进 | sparse 算子/生成器需要显式类型支持 | D0 已采用 |
 | 复制 PyTorch `TensorImpl` 层次和 owning Tensor | 接近 PyTorch 内部对象模型 | 新建存储、引用计数、分派和版本系统，超出两库当前定位 | 不采用 |
 
 `Tensor` 暂时仍是 `TensorView` 别名。可在未来确有多布局通用算子需求时引入只用于入参的带标签 `TensorArg`，但不能用它默默替换现有别名。第一阶段通过显式 sparse 类型和重载接入现有 operator 架构。
@@ -31,7 +31,7 @@ flowchart TD
 
 ### 逻辑元数据和物理组件
 
-建议 `SparseTensorView` 是可复制的非拥有型描述符：拥有自己的 shape 元数据，复制组件视图的元数据，借用组件数据。不得借用临时 `TensorView` 的 `shape()` 返回值。稀疏描述符复制不会延长 data 生命周期，也不分配设备内存。
+`SparseTensorView` 是可复制的非拥有型描述符：拥有自己的 shape 元数据，复制组件视图的元数据，借用组件数据。不得借用临时 `TensorView` 的 `shape()` 返回值。稀疏描述符复制不会延长 data 生命周期，也不分配设备内存。
 
 | 字段/概念 | 契约 |
 | --- | --- |
@@ -50,7 +50,7 @@ COO 的 `indices()/values()` 对外保持需要 coalesced 的语义；桥接未 
 
 ### 校验边界
 
-InfiniRT 负责不读取数据内容的结构校验：组件数量、rank、shape、dtype、完整 device 一致性、非空区域指针、布局支持、乘法/加法溢出、index dtype 可表示范围。组件首期要求连续；shape 可为零，但 CSR 的指针数组仍具有 `rows+1` 个元素。对零长度数组不解引用 data。
+InfiniRT 负责不读取数据内容的结构校验：组件数量、rank、shape、dtype、完整 device 一致性、非空区域指针及元素自然对齐、布局支持、乘法/加法溢出、index dtype 可表示范围。组件首期要求连续；shape 可为零，但 CSR 的指针数组仍具有 `rows+1` 个元素。对零长度数组不解引用 data。
 
 InfiniOps 负责需要扫描 CPU 或设备数据的校验：COO bounds、coalesced 声明真实性、compressed 起止值/单调性、plain indices 的范围和逐段严格递增。校验 GPU 数据必须通过设备 kernel 或明确同步的检查路径，不能由 host 解引用。
 
@@ -58,9 +58,9 @@ RT 工厂只执行 metadata 校验，不读取组件内容、不提交设备工�
 
 可信内部算子输出允许跳过重复扫描。与 PyTorch 默认关闭完整 invariant 检查存在有意差异：RT 借用的裸指针没有 PyTorch 的所有权和版本体系。不把未经验证的 `is_coalesced=true` 当作排序已完成。可信模式的前置条件是结构由已验证算子产生，且索引未被修改；该模式不对非法外部指针提供保护。
 
-拟新增的描述符/校验 API 返回可检查的 `ValidationResult`，区分非法元数据、不支持布局、索引越界、整数溢出和容量不足。它是新设计，不复用/伪称现有 `runtime::Error` 已包含这些状态。遵守 C++ 不抛异常原则，且公共非法输入拒绝在 Release 中也有效。现有贡献规范偏向 `assert`，阶段 P0 需记录此边界的设计决议：assert 用于内部不变量，外部稀疏输入使用显式检查结果；不在此次规划中改写全仓错误体系。Python 边界将结果翻译为相应异常。
+拟新增的描述符/校验 API 返回可检查的 `ValidationResult`，区分非法元数据、不支持布局、索引越界、整数溢出和容量不足。它是新设计，不复用/伪称现有 `runtime::Error` 已包含这些状态。遵守 C++ 不抛异常原则，且公共非法输入拒绝在 Release 中也有效。D0 已记录并写入 Ops 贡献规范的专用决议：此边界 assert 仅用于内部不变量，外部稀疏输入使用显式检查结果；不改写全仓 dense 错误体系。Python 边界按 [D0 状态表](06-d0-contract.md#结果与-python-异常映射) 翻译异常。
 
-现有 `Operator::Call` 通常返回 void，部分 provider 选择路径实际抛 `std::invalid_argument`，不能声称已经满足此 status 设计。建议新增 sparse checked entry / Prepare / Execute，在进入旧分派前检查 provider 存在性、显式 implementation 是否支持、workspace 和容量，并把可预期失败返回为状态；执行路径不能再无条件落入会抛错的旧选择分支。P0 冻结各状态与 Python 异常的映射。ATen provider 自身可能抛框架异常，其边界须局部捕获并转为失败状态；这属于有文档记录的互操作适配，不新增向 C++ 调用者抛出的异常。
+现有 `Operator::Call` 通常返回 void，部分 provider 选择路径实际抛 `std::invalid_argument`，不能声称已经满足此 status 设计。D0 确定新增 sparse checked entry / Prepare / Execute，在进入旧分派前检查 provider 存在性、显式 implementation 是否支持、workspace 和容量，并把可预期失败返回为状态；执行路径不能再无条件落入会抛错的旧选择分支。各状态与 Python 异常映射已在 D0 冻结。ATen provider 自身可能抛框架异常，其边界须局部捕获并转为失败状态；这属于有文档记录的互操作适配，不新增向 C++ 调用者抛出的异常。
 
 ### 内存、异步与结构变更
 
@@ -95,17 +95,17 @@ RT 工厂只执行 metadata 校验，不读取组件内容、不提交设备工�
 
 `SparseSampledAddmm` 当前 dense 签名不能表达合法 CSR input。新增 sparse 签名为 canonical，旧签名保留迁移诊断，不将 dense 参数猜测成 CSR。先使用手写 sparse ATen provider 或原生 CPU provider，不因 YAML 中存在同名条目就让通用生成器自动接管。
 
-sampled_addmm 按存储坐标计算，显式零仍参与采样。数学表达是每个条目 p 写入 `alpha * dot(mat1[row], mat2[:,col[p]]) + beta * input.values[p]`，保持 input pattern；不能按 `values != 0` 重建 mask。若 beta=0，上游对旧 input 数值的 NaN/Inf 处理需单独对照，不能机械执行浮点 `0 * NaN` 后声称等价。
+sampled_addmm 按存储坐标计算，显式零仍参与采样。数学表达是每个条目 p 写入 `alpha * dot(mat1[row], mat2[:,col[p]]) + beta * input.values[p]`，保持 input pattern；不能按 `values != 0` 重建 mask。D0 已核验 v2.9.0 CPU 路径没有 beta=0 忽略 input 的分支；NaN/Inf、alpha=0 和空内积按 [特殊值契约](06-d0-contract.md#数值与特殊值冻结) 处理。GPU 必须单独验证，不能套用 dense addmm 的规则。
 
 ### 输出容量和动态 nnz
 
-对于 SpMM / ToDense，输出逻辑 shape 已知，调用者提供 dense out，执行期间不替换 data。对于 sampled_addmm，输出 CSR 的 nnz 与 input 相同，预分配并写入相同 pattern；首期不允许 in-place 或 input/out 重叠。对于 CSR→COO，nnz 已知。
+对于 SpMM / ToDense，输出逻辑 shape 已知，调用者提供 dense out，执行期间不替换 data。对于 sampled_addmm，输出 CSR 的 nnz 与 input 相同，预分配并写入相同 pattern；首期不允许 in-place 或 input/out 重叠。其 out-only 描述只校验 metadata/容量，不能按输入扫描尚未初始化的索引。对于 CSR→COO，nnz 已知。
 
-首期所有 sparse 算子的输出写入区间、workspace 与输入组件/输入 dense operands 不得重叠，各独立输出组件之间以及输出与 workspace 之间也不得重叠。按声明的有效/容量字节区间检查，零长度区间不构成重叠；计算区间端点时检查整数溢出。后续别名支持须逐算子明确开放，不能由现有 dense 行为推断。
+首期所有 sparse 算子的输出、workspace、结果槽写入区间与输入组件/输入 dense operands 不得重叠，各写入区间彼此也不得重叠。按声明的有效/容量字节区间检查，零长度区间不构成重叠；计算区间端点时检查整数溢出。后续别名支持须逐算子明确开放，不能由现有 dense 行为推断。
 
-对于 coalesce、COO→CSR、dense→sparse，实际 nnz 可能取决于内容。建议分为三步，作为 InfiniOps 自定义低层执行协议，不宣称这三个接口来自 PyTorch：
+对于 coalesce、COO→CSR、dense→sparse，实际 nnz 可能取决于内容。D0 确定分为三步，作为 InfiniOps 自定义低层执行协议，不宣称这三个接口来自 PyTorch：
 
-1. **Prepare / 查询容量**：根据元数据给出 workspace、各组件容量上界及所需对齐；coalesce 上界为 input nnz，dense→sparse 上界为逻辑条目数。调用者也可选 count-first 以减少分配，但 GPU count 的主机回读是明确同步点。
+1. **Prepare / 查询容量**：根据元数据给出 workspace、各组件容量上界及所需对齐；coalesce 上界为 input nnz，dense→sparse 上界为逻辑条目数。P2 必须实现上界模式；count-first 是可选扩展，未实现时明确拒绝，GPU count 的主机回读是明确同步点。
 2. **Execute**：向 caller-owned 输出组件写数据，并在 caller-owned 结果槽记录 `{status, actual_nnz}`。GPU 上结果槽可位于设备；初始为 pending，提交状态与完成状态区分。任何容量检查失败都不能越界写入。不能把容量当作有效 nnz 传给后续算子。
 3. **Finalize**：CPU 立即、GPU 在 event/stream 完成后读取状态和实际 nnz，仅在成功时构造有效组件 shape 和结果 sparse view。失败时输出不发布，已部分写入的内容不可使用；不默认承诺失败事务回滚。此阶段不拷贝 values，coalesced 标记由成功执行结果确定。GPU→host 结果回读成本必须可见。
 

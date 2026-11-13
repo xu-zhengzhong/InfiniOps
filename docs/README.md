@@ -40,8 +40,8 @@ Start with these pages:
 - [Compatibility](compatibility.md): public API boundary, generated files, and
   internal implementation headers.
 - [Sparse Tensor Design and Plan](sparse/README.md): Chinese-language analysis
-  of PyTorch sparse tensors and a cross-repository plan for InfiniOps and
-  InfiniRT; proposed functionality is not implemented.
+  of PyTorch sparse tensors and the D0 frozen cross-repository contract for
+  InfiniOps and InfiniRT; sparse functionality is not implemented.
 
 The API reference can be generated locally with Doxygen. The Documentation Pages
 workflow validates that generated HTML for pull requests and publishes `master`

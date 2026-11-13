@@ -1,6 +1,6 @@
 # 分阶段执行计划
 
-本页列出未来实现任务；本次仅编写文档，不执行这些改造、构建或发布。阶段以依赖和验收门槛排序，不给出未经团队规模、硬件和供应商 SDK 确认的日期承诺。
+本页列出实现任务；**D0 / P0 文档契约已完成冻结**，见 [D0 决议及走查](06-d0-contract.md)。RT1 及后续代码、构建、运行验证和发布仍未完成。阶段以依赖和验收门槛排序，不给出未经团队规模、硬件和供应商 SDK 确认的日期承诺。
 
 ## 阶段与交付范围
 
@@ -21,7 +21,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 
 | ID | 仓库 / 主要文件 | 交付 | 依赖与验收 |
 | --- | --- | --- | --- |
-| D0 | 两库 docs：core-types、compatibility；Ops operator-api-alignment | 确认 SparseTensorView、校验结果、checked entry、dynamic output、alias/owner 契约 | P0；用 [验证样例](05-validation.md) 逐项走查 |
+| D0 | 两库 docs：core-types、compatibility；Ops operator-api-alignment、sparse/06-d0-contract | **已完成契约冻结**：SparseTensorView、校验结果、checked entry、dynamic output、alias/owner | P0；[38 项验证样例逐项走查](06-d0-contract.md#验证样例逐项走查)，不计作实现测试通过 |
 | RT1 | 新增 `src/tensor_layout.h`、`src/sparse_tensor_view.h` / `.cc` | 独立布局和组件描述；metadata-only 工厂，不依赖 Torch/稀疏供应商库 | D0；dense `TensorView` 对象布局与 hash/equality 不变 |
 | RT2 | `scripts/generate_public_headers.py`、`CMakeLists.txt`、`src/CMakeLists.txt` | umbrella、include 重写、安装导出新类型 | RT1；安装后仅 include `<infini/rt.h>` 可用 |
 | RT3 | 新增 `tests/test_sparse_tensor_view.cc`；`tests/CMakeLists.txt`、`tests/install_consumer_smoke.cc` | 元数据/溢出/设备/空组件测试；dense 回归和安装消费者 | RT1–RT2；Release 下错误输入也被拒绝 |
@@ -70,7 +70,7 @@ sparse×sparse 的符号/数值两阶段输出、softmax 对隐式元素的特�
 
 ## 初始能力矩阵
 
-表中是计划目标，不是当前支持状态。P2 的完整限制为二维、连续组件、无 batch/hybrid、实数 float32/64；首期 dense operands/out 也可限制连续，但必须一致地验证与记录。
+表中是计划目标，不是当前支持状态。D0 冻结的 P2 限制为二维、连续组件、无 batch/hybrid、实数 float32/64；dense operands/out 也必须连续，负 stride 拒绝，所有 value dtype 一致。
 
 | 能力 | CPU P2 | NVIDIA P3 | 其他加速器 |
 | --- | --- | --- | --- |
@@ -98,6 +98,6 @@ sparse×sparse 的符号/数值两阶段输出、softmax 对隐式元素的特�
 | 上游版本与文档不一致 | 固定 tag、记录探针版本、逐组合验证 | API/source/reference 证据表 |
 | 性能收益取决于稀疏分布 | 分开测转换/分析/执行；保留用户显式选择 | 分布、密度、宽度和复用次数基准 |
 
-P0 需评审的决策已经给出推荐值：独立 view、先 CPU COO/CSR、checked 状态入口、默认 checked import、caller-owned 动态输出、原生 CPU 不依赖 Torch、初期不缓存结构分析。没有用户业务画像时，按这些建议推进即可；具体优先硬件和 block 大小由后续真实消费者决定，不阻塞当前分析交付。
+P0 决策已由 D0 冻结：独立 view、先 CPU COO/CSR、checked 状态入口、默认 checked import、caller-owned 动态输出、原生 CPU 不依赖 Torch、初期不缓存结构分析。错误映射、完成状态、特殊值及用例对应见 [D0 契约](06-d0-contract.md)。具体优先硬件和 block 大小由后续真实消费者决定，不阻塞当前契约交付。
 
 如果某后端未达出口，只保持该组合 unsupported，不自动转成 dense 或切换设备。回滚可撤回对应 provider/注册与实验性入口，已稳定的 dense 调用链继续工作。版本发布时把两库配套版本、受支持组合和实验性 API 标记写入发布说明。

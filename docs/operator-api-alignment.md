@@ -238,3 +238,102 @@ unless callers need it.
 When applying these rules, record the selected upstream interface and any
 intentional C++ adaptations in the pull request. Follow `CONTRIBUTING.md` for
 compatibility, testing, and validation requirements.
+
+## Sparse API Contract (D0 Frozen, Not Implemented)
+
+D0 freezes the following design against the PyTorch public API in the `2.9`
+documentation and the `v2.9.0` source baseline recorded in the
+[sparse reference](sparse/01-pytorch-reference.md). These are implementation
+requirements for RT1 and OP1 onward, not available signatures or provider
+support. The [D0 contract](sparse/06-d0-contract.md) defines checked entry,
+status-to-Python exception mapping, dynamic outputs, aliasing, and ownership.
+
+`Tensor` continues to mean the dense `infini::rt::TensorView`. Sparse inputs
+and fixed-pattern sparse outputs use the independent `SparseTensorView` type;
+neither generators nor bindings may erase it to `Tensor`. Optional and list
+forms must preserve the same distinction. The first computation scope is
+two-dimensional COO/CSR, no batch or hybrid dimensions, contiguous components
+and dense operands/outputs, CPU float32/float64 values, COO int64 indices, and
+CSR matching int32 or int64 index components. It is forward-only. Python
+inputs requiring gradients must be rejected with a diagnostic asking the
+caller to detach explicitly.
+
+### Canonical operations and alignment findings
+
+The table uses contract notation, not C++ declarations. Inputs precede
+attributes; outputs are last. `out_buffer` denotes caller-owned component
+capacity for a dynamic result, whose valid sparse view is published only by
+Finalize. It is not a sparse tensor whose `nnz` equals its allocation capacity.
+
+| Operation and public reference | Frozen argument contract | Review classification and remaining gap |
+| --- | --- | --- |
+| Borrowed COO/CSR factories; conceptual references `torch.sparse_coo_tensor` and `torch.sparse_csr_tensor` | Components first, explicit logical shape and layout attributes next, result view last | **Custom** low-level borrowing API, rather than a replacement for the owning PyTorch constructors. No implicit index conversion, allocation, shape inference, or `requires_grad`. |
+| `Coalesce`; `Tensor.coalesce` | COO `input`, `out_buffer` | **Aligned with C++ adaptation** for the declared forward COO subset: caller-owned output and result metadata. Sorted unique coordinates and summed values are required. Even an already coalesced input writes independent output; no input/output alias is promised. Other dimensionalities and autograd remain **Needs remediation**, deferred. |
+| `ToDense`; `Tensor.to_dense` | COO/CSR `input`, dense `out` | **Aligned with C++ adaptation** for the declared same-dtype forward subset. Duplicate COO entries add. The full public contract, including dtype conversion and gradient-related behavior, remains **Needs remediation**, deferred. |
+| `ToSparseCsr` / `ToSparseCoo`; `Tensor.to_sparse_csr` / `Tensor.to_sparse` | COO/CSR `input`, destination components/result last | **Aligned with C++ adaptation** for two-dimensional COO-to-CSR and CSR-to-COO conversion. COO-to-CSR uses dynamic `out_buffer`; CSR-to-COO has known `nnz`. Dense conversion, other layouts, dimensionality options, and autograd remain **Needs remediation**, deferred. |
+| `SparseMm`; `torch.sparse.mm` | Sparse `mat1`, dense `mat2`, `reduce`, dense `out` | **Needs remediation**, deferred outside the first subset: sparse right operands and non-sum reductions are not supported. An explicit trailing output is an accepted C++ adaptation. |
+| `SparseSampledAddmm`; `torch.sparse.sampled_addmm` | CSR `input`, dense `mat1`, dense `mat2`, `beta`, `alpha`, CSR `out` | **Aligned with C++ adaptation** for the declared real forward subset: grouped scalar attributes and caller-owned output. Broader scalar/dtype and autograd coverage remain **Needs remediation**, deferred. The existing dense-only signature is also **Needs remediation** until migrated. |
+| Prepare / Execute / Finalize | Inputs and execution attributes, then caller-owned output components and result metadata | **Custom** execution protocol; it has no claimed PyTorch public API equivalent. |
+
+The subset classifications do not classify the entire PyTorch operation as
+aligned. Deferred gaps remain visible when implementation milestones are
+completed. Requiring explicit attributes is an accepted C++ adaptation; a
+missing default-argument convenience overload does not justify omitting the
+attribute itself.
+
+Initial COO-to-CSR conversion produces int64 indices; requesting int32 output
+is an unsupported capability, not an implicit narrowing request. CSR-to-COO
+produces int64 indices and explicitly widens int32 input indices as part of
+that format conversion. Coalesce preserves COO int64 indices, sampled addmm
+preserves the input CSR index dtype, and all these operations preserve value
+dtype.
+
+`SparseMm` must represent `reduce` and accept only `sum` initially. It accepts
+uncoalesced COO by adding duplicate entries, either directly or using explicitly
+accounted workspace; it must not silently coalesce the imported input or change
+its buffers. Sparse right operands and unsupported reductions receive the
+checked capability failure defined in the D0 contract. An unsupported layout,
+dtype, device, or provider cannot trigger automatic densification, device
+transfer, index narrowing, or a hidden import copy.
+
+### Sampled addmm migration and stored entries
+
+The canonical grouped contract is:
+
+```text
+SparseSampledAddmm(
+    input: SparseTensorView, mat1: Tensor, mat2: Tensor,
+    beta: double, alpha: double, out: SparseTensorView)
+```
+
+Both sparse arguments must be CSR. Their logical shape and stored-entry count
+match; output components are independent writable storage sized for the input
+pattern. Execution writes the same row pointers and column indices and
+computes values at every stored coordinate, including explicitly stored zeros.
+For entry `p` at `(row, col[p])`, the finite-value formula is
+`alpha * dot(mat1[row], mat2[:, col[p]]) + beta * input.values[p]`.
+Neither `values != 0` nor a dense round trip may define the sampling mask.
+NaN/Inf and zero-scalar behavior must satisfy the special-value contract and
+S18 validation; the finite-value formula alone is not sufficient evidence.
+
+When OP6 introduces the canonical sparse signature, retain the previous
+dense-only overload temporarily as a migration diagnostic. Mark it deprecated
+where supported, name the CSR replacement, and state that removal requires a
+separate breaking change. Dense arguments must receive that diagnostic; they
+must never be guessed to contain CSR components. This requirement does not
+claim that the current dense skeleton can execute a sparse operation.
+
+Python must route by layout before converting arguments. Two overloads that
+both appear as `py::object` are not sufficient to guarantee correct dispatch.
+The old dense route must not intercept a genuine CSR call. The generic Torch
+generator must not claim support from the existing YAML entry: a dedicated
+native or ATen sparse provider must implement the component and output
+contracts, and an ATen provider must preserve or explicitly copy results into
+caller-owned buffers under the documented capacity checks.
+
+Coalesce and format conversion preserve explicitly stored zeros, including a
+zero produced by adding duplicate values. `nnz` counts stored entries, not
+numerically nonzero values. Validation compares layout, indices, values, `nnz`,
+and dense numerical results separately using S01-S19 and the output/resource
+cases in the [validation plan](sparse/05-validation.md). D0 records these
+requirements; it does not count those future runtime tests as passed.
