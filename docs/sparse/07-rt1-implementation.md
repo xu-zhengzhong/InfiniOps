@@ -1,6 +1,6 @@
 # RT1：稀疏描述符源码实现
 
-状态：**RT1 源码实现已完成**。本任务落实 [D0 的 RT 类型与构造结果](06-d0-contract.md#rt-类型与构造结果)，未完成 RT2 安装导出、RT3 正式测试集或任何 Ops 稀疏计算任务。新增类型目前使用 InfiniRT 源码头文件，不是 `<infini/rt.h>` 的安装接口。
+状态：**RT1 源码实现已完成**。本任务落实 [D0 的 RT 类型与构造结果](06-d0-contract.md#rt-类型与构造结果)，交付时仅提供源码头文件。本页保留 RT1 的实现与验证记录；后续 [RT2 已完成安装导出](08-rt2-implementation.md)，新增类型现可通过 `<infini/rt.h>` 使用。RT3 正式元数据测试集及所有 Ops 稀疏计算任务仍未完成。
 
 ## 文件与边界
 
@@ -18,7 +18,7 @@
 
 ## 具体 C++ 接口
 
-源码消费者 include `"sparse_tensor_view.h"` 并链接同一次构建的 InfiniRT 库。主要入口为：
+RT1 源码消费者 include `"sparse_tensor_view.h"`；RT2 后的安装消费者使用 `<infini/rt.h>`，并链接同一次构建的 InfiniRT 库。主要入口为：
 
 ```cpp
 SparseTensorView::CreateCoo(shape, indices, values, out, coalesced);
@@ -90,6 +90,6 @@ c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 /tmp/rt1-contract-final-sanitized
 ```
 
-现有安装消费者测试验证的是 dense 公共接口；不证明新 sparse 类型已经导出。RT3 仍须将上述元数据用例纳入正式测试集，并在 RT2 完成后验证只 include `<infini/rt.h>` 的 sparse 安装消费者。本次没有执行任何稀疏计算或设备 kernel。
+RT1 当时的安装消费者测试只验证 dense 公共接口；不能作为 sparse 类型导出的证据。后续 RT2 已扩展安装消费者 smoke，记录见 [RT2 实现记录](08-rt2-implementation.md)。RT3 仍须将上述元数据用例纳入正式测试集，并扩展安装消费者的错误与边界覆盖。RT1 没有执行任何稀疏计算或设备 kernel。
 
-后续依赖保持 [执行计划](04-execution-plan.md#任务拆分与合并顺序) 的 RT2 → RT3 / OP1–OP2 顺序。P1/P2 未完成，Python 桥接、内容校验、动态输出、稀疏算子及设备 provider 均未由 RT1 交付。
+后续依赖保持 [执行计划](04-execution-plan.md#任务拆分与合并顺序) 的 RT2 → RT3 / OP1–OP2 顺序；RT2 已完成。P1/P2 未完成，Python 桥接、内容校验、动态输出、稀疏算子及设备 provider 均未由 RT1/RT2 交付。

@@ -1,6 +1,6 @@
 # 分阶段执行计划
 
-本页列出实现任务；**D0 / P0 文档契约已完成冻结**，见 [D0 决议及走查](06-d0-contract.md)。RT1 源码实现已完成，范围见 [RT1 实现记录](07-rt1-implementation.md)；RT2 安装导出、RT3 正式测试集和全部 Ops 后续任务仍未完成。阶段以依赖和验收门槛排序，不给出未经团队规模、硬件和供应商 SDK 确认的日期承诺。
+本页列出实现任务；**D0 / P0 文档契约已完成冻结**，见 [D0 决议及走查](06-d0-contract.md)。RT1 源码实现与 RT2 安装导出已完成，范围见 [RT1 实现记录](07-rt1-implementation.md) 和 [RT2 实现记录](08-rt2-implementation.md)；RT3 正式元数据测试集和全部 Ops 后续任务仍未完成。阶段以依赖和验收门槛排序，不给出未经团队规模、硬件和供应商 SDK 确认的日期承诺。
 
 ## 阶段与交付范围
 
@@ -17,13 +17,13 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 
 ## 任务拆分与合并顺序
 
-路径以仓库根为起点；除已标记完成的 RT1 外，“新增”表示拟议文件，不是当前存在的实现。文件名可在 P0 按仓库命名规范调整，但职责和交付要求不能丢失。
+路径以仓库根为起点；除已标记完成的 RT1/RT2 外，“新增”表示拟议文件，不是当前存在的实现。文件名可在 P0 按仓库命名规范调整，但职责和交付要求不能丢失。
 
 | ID | 仓库 / 主要文件 | 交付 | 依赖与验收 |
 | --- | --- | --- | --- |
 | D0 | 两库 docs：core-types、compatibility；Ops operator-api-alignment、sparse/06-d0-contract | **已完成契约冻结**：SparseTensorView、校验结果、checked entry、dynamic output、alias/owner | P0；[38 项验证样例逐项走查](06-d0-contract.md#验证样例逐项走查)，不计作实现测试通过 |
 | RT1 | InfiniRT：`src/tensor_layout.h`、`src/sparse_tensor_view.h` / `.cc` | **源码实现已完成**：独立布局、组件描述和 checked metadata-only 工厂；不依赖 Torch/稀疏供应商库 | D0；dense `TensorView` 对象布局与 hash/equality 不变；[实现记录](07-rt1-implementation.md) |
-| RT2 | `scripts/generate_public_headers.py`、`CMakeLists.txt`、`src/CMakeLists.txt` | umbrella、include 重写、安装导出新类型 | RT1；安装后仅 include `<infini/rt.h>` 可用 |
+| RT2 | InfiniRT：`scripts/generate_public_headers.py`、`CMakeLists.txt`、`tests/install_consumer_smoke.cc`；复用 `src/CMakeLists.txt` 安装链 | **安装导出已完成**：umbrella、include 重写、新类型导出及增量生成依赖 | RT1；安装后仅 include `<infini/rt.h>` 可用；[实现记录](08-rt2-implementation.md) |
 | RT3 | 新增 `tests/test_sparse_tensor_view.cc`；`tests/CMakeLists.txt`、`tests/install_consumer_smoke.cc` | 元数据/溢出/设备/空组件测试；dense 回归和安装消费者 | RT1–RT2；Release 下错误输入也被拒绝 |
 | OP1 | `src/tensor.h` 或新增 sparse alias 头；`src/operator.h`、`src/tuning.h` | 参数 traits、设备/能力检查、sparse metadata cache；默认禁用 sparse tuning | RT2；不同 layout/indices 不误复用；明确 checked entry 状态 |
 | OP2 | `scripts/generate_wrappers.py`、`scripts/generate_public_operator_header.py` | 显式 dense/sparse 类型分类、overload/optional/list 保真、公开实例化 | RT2，可与 OP1 并行；新类型不降为 dense，旧 dense 输出稳定 |

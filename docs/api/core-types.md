@@ -23,8 +23,10 @@ device, and strides, but it does not own the memory it references.
 ## SparseTensorView: D0 Contract
 
 **Design frozen; Ops API not implemented or exported yet.** RT1 implements
-the independent `infini::rt::SparseTensorView` in RT source; RT2/RT3 must
-export and validate it before Ops integration. `Tensor` remains the dense alias.
+the independent `infini::rt::SparseTensorView`, and
+[RT2](../sparse/08-rt2-implementation.md) exports it through the installed
+`<infini/rt.h>`. RT3's full metadata test suite and the dependent Ops integration
+remain pending. `Tensor` remains the dense alias.
 The complete [D0 contract](../sparse/06-d0-contract.md) defines validation,
 checked execution, errors, dynamic results, and ownership. The existing dense
 `TensorView` layout, hash, and equality must remain unchanged.
