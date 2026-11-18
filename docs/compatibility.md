@@ -84,8 +84,8 @@ sparse types and checked entry points are **not yet available** through the Ops
 public headers or Python package. D0 is documentation-only;
 [RT1](sparse/07-rt1-implementation.md) implements the RT types, and
 [RT2](sparse/08-rt2-implementation.md) exports them through the installed
-`<infini/rt.h>`. RT3's full metadata test suite and the dependent Ops API remain
-pending.
+`<infini/rt.h>`. [RT3](sparse/09-rt3-implementation.md) adds the formal metadata
+and installed-consumer regression tests. The dependent Ops API remains pending.
 The existing `sparse_sampled_addmm` dense skeleton is not evidence of sparse
 support. OP6 introduces the canonical CSR signature and retains the dense
 overload temporarily for a migration diagnostic, as specified in

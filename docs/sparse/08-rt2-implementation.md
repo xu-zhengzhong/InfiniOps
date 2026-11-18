@@ -2,7 +2,7 @@
 
 状态：**RT2 安装导出已完成**。本任务将 [RT1 的稀疏描述符](07-rt1-implementation.md) 接入 InfiniRT 公开头生成与安装链。安装消费者只需 include `<infini/rt.h>`，并链接同一次构建的 `InfiniRT::infinirt`，即可使用 `TensorLayout`、`SparseTensorView`、`ValidationResult`、`ValidationCode` 和 `ValidationComponent`。
 
-RT3 正式元数据测试集和所有 Ops 后续任务仍未完成。RT2 不改变 RT1 的 metadata-only 校验、非拥有型生命周期或首期二维 COO/CSR 限制，也不增加内容校验、稀疏计算或 Python 桥接。
+后续 [RT3 已完成正式元数据测试集](09-rt3-implementation.md)，所有 Ops 后续任务仍未完成。RT2 不改变 RT1 的 metadata-only 校验、非拥有型生命周期或首期二维 COO/CSR 限制，也不增加内容校验、稀疏计算或 Python 桥接。
 
 ## 生成与安装链
 
@@ -57,4 +57,4 @@ python3 /tmp/infinirt-rt2-incremental-check.py
 
 ## 后续边界
 
-RT2 的安装 smoke 证明公开头与匹配库可被消费，不替代 RT3 的元数据、溢出、设备、空组件及 dense 回归正式测试集。Ops 参数 traits、生成器、checked import、内容校验、动态输出与 provider 按 [执行计划](04-execution-plan.md#任务拆分与合并顺序) 继续实施；P1/P2 尚未完成。
+RT2 的安装 smoke 证明公开头与匹配库可被消费，不替代后续 [RT3 已交付的正式测试集](09-rt3-implementation.md)：元数据、溢出、设备、空组件及 dense 回归。Ops 参数 traits、生成器、checked import、内容校验、动态输出与 provider 按 [执行计划](04-execution-plan.md#任务拆分与合并顺序) 继续实施；P1/P2 尚未完成。

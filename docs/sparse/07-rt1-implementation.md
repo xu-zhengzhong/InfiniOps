@@ -1,6 +1,6 @@
 # RT1：稀疏描述符源码实现
 
-状态：**RT1 源码实现已完成**。本任务落实 [D0 的 RT 类型与构造结果](06-d0-contract.md#rt-类型与构造结果)，交付时仅提供源码头文件。本页保留 RT1 的实现与验证记录；后续 [RT2 已完成安装导出](08-rt2-implementation.md)，新增类型现可通过 `<infini/rt.h>` 使用。RT3 正式元数据测试集及所有 Ops 稀疏计算任务仍未完成。
+状态：**RT1 源码实现已完成**。本任务落实 [D0 的 RT 类型与构造结果](06-d0-contract.md#rt-类型与构造结果)，交付时仅提供源码头文件。本页保留 RT1 的实现与验证记录；后续 [RT2 已完成安装导出](08-rt2-implementation.md)，新增类型现可通过 `<infini/rt.h>` 使用，[RT3 已完成正式元数据测试集](09-rt3-implementation.md)。所有 Ops 稀疏计算任务仍未完成。
 
 ## 文件与边界
 
@@ -90,6 +90,6 @@ c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 /tmp/rt1-contract-final-sanitized
 ```
 
-RT1 当时的安装消费者测试只验证 dense 公共接口；不能作为 sparse 类型导出的证据。后续 RT2 已扩展安装消费者 smoke，记录见 [RT2 实现记录](08-rt2-implementation.md)。RT3 仍须将上述元数据用例纳入正式测试集，并扩展安装消费者的错误与边界覆盖。RT1 没有执行任何稀疏计算或设备 kernel。
+RT1 当时的安装消费者测试只验证 dense 公共接口；不能作为 sparse 类型导出的证据。后续 RT2 已扩展安装消费者 smoke，记录见 [RT2 实现记录](08-rt2-implementation.md)。RT3 已将上述元数据用例纳入正式测试集，并扩展安装消费者的错误与边界覆盖，见 [RT3 实现记录](09-rt3-implementation.md)。RT1 没有执行任何稀疏计算或设备 kernel。
 
-后续依赖保持 [执行计划](04-execution-plan.md#任务拆分与合并顺序) 的 RT2 → RT3 / OP1–OP2 顺序；RT2 已完成。P1/P2 未完成，Python 桥接、内容校验、动态输出、稀疏算子及设备 provider 均未由 RT1/RT2 交付。
+后续依赖保持 [执行计划](04-execution-plan.md#任务拆分与合并顺序) 的 RT2 → RT3 / OP1–OP2 顺序；RT2/RT3 已完成。P1/P2 未完成，Python 桥接、内容校验、动态输出、稀疏算子及设备 provider 均未由 RT1–RT3 交付。

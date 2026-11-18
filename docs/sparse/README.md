@@ -1,6 +1,6 @@
 # InfiniOps / InfiniRT 稀疏张量支持：分析与执行方案
 
-状态：**D0 / P0 契约已冻结，RT1 源码实现与 RT2 安装导出已完成**。InfiniRT 已通过 `<infini/rt.h>` 提供独立 COO/CSR 描述符和 metadata-only 工厂；RT3 正式元数据测试集及所有 Ops 后续任务尚未完成。冻结决议见 [06 D0 接口契约](06-d0-contract.md)，API 与导出边界见 [07 RT1 实现记录](07-rt1-implementation.md) 和 [08 RT2 实现记录](08-rt2-implementation.md)；类型可用不表示稀疏计算可用。
+状态：**D0 / P0 契约已冻结，RT1–RT3 已完成**。InfiniRT 已通过 `<infini/rt.h>` 提供独立 COO/CSR 描述符和 metadata-only 工厂，正式元数据测试及安装消费者已纳入 CTest；所有 Ops 后续任务尚未完成。冻结决议见 [06 D0 接口契约](06-d0-contract.md)，API 与导出边界见 [07 RT1 实现记录](07-rt1-implementation.md) 和 [08 RT2 实现记录](08-rt2-implementation.md)，测试范围与结果见 [09 RT3 实现记录](09-rt3-implementation.md)；类型可用不表示稀疏计算可用。
 
 ## 结论与范围
 
@@ -22,6 +22,7 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 | [06 D0 接口契约](06-d0-contract.md) | 已冻结的类型/状态/checked entry/动态输出/alias/owner 决议，以及全部 38 项用例走查 |
 | [07 RT1 实现记录](07-rt1-implementation.md) | 源码 API、元数据校验边界及 RT1 验证记录 |
 | [08 RT2 实现记录](08-rt2-implementation.md) | 公开头生成、安装导出、增量更新及安装消费者验证 |
+| [09 RT3 实现记录](09-rt3-implementation.md) | 正式元数据、边界、生命周期测试及 Release / dense / 安装回归 |
 
 ## 分析基线
 
@@ -52,4 +53,4 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 3. 稀疏结构分析依赖索引内容，不能复用只按 shape / dtype / strides 的缓存。
 4. 稀疏结果的实际 nnz 可能运行后才能确定，必须先定义输出容量、结果元数据和异步完成方式。
 
-决策和可检验的交付条件已在 D0 冻结；RT1/RT2 已完成独立 view 与 RT 安装导出，正式元数据测试、Ops 生成器、缓存和动态输出仍须由后续任务实现和验证，不把描述符可构造当作稀疏计算能力。供应商库选择留给相应后端任务。
+决策和可检验的交付条件已在 D0 冻结；RT1–RT3 已完成独立 view、RT 安装导出与正式元数据测试，Ops 生成器、缓存和动态输出仍须由后续任务实现和验证，不把描述符可构造当作稀疏计算能力。供应商库选择留给相应后端任务。

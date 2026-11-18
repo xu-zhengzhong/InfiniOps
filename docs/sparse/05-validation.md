@@ -1,6 +1,6 @@
 # 验证与验收方案
 
-以下是后续实现的测试设计，不是运行结果。D0 已完成 [全部 38 项用例的契约走查](06-d0-contract.md#验证样例逐项走查)，并冻结状态、输出和生命周期预期；该记录不替代 RT3/OP4–GPU2 的执行证据。D0 未构建 InfiniOps/InfiniRT，未执行新的稀疏算子。
+以下是分阶段实现的测试设计，不是运行结果。D0 已完成 [全部 38 项用例的契约走查](06-d0-contract.md#验证样例逐项走查)，并冻结状态、输出和生命周期预期；该记录不替代执行证据。RT 元数据部分已纳入正式测试，见 [RT3 验证记录](09-rt3-implementation.md)；OP4–GPU2 仍待实施。D0 未构建 InfiniOps/InfiniRT，未执行新的稀疏算子。
 
 ## 验证原则
 
@@ -66,7 +66,7 @@ CPU 使用 ASan/UBSan 检查 buffer 边界及无效生命周期；GPU 使用可�
 
 | 层 | 现有入口与拟新增测试 | 交付条件 |
 | --- | --- | --- |
-| RT metadata | `tests/test_core.cc`、`test_tensor_view_allocations.cc`；新增 sparse view 测试 | dense rank 0–8 内联及高 rank 回退不退化，sparse 不隐式转 dense |
+| RT metadata | `tests/test_core.cc`、`test_tensor_view_allocations.cc`、`test_sparse_tensor_view.cc`（RT3 已纳入 CTest） | dense rank 0–8 内联及高 rank 回退不退化，sparse 不隐式转 dense |
 | RT 安装包 | `tests/install_consumer_smoke.cc`、`tests/install_consumer/` | 只用安装前缀和 `<infini/rt.h>` 编译运行 |
 | Ops codegen | 三个 `tests/test_generate_*` 的 wrapper / torch / public header 测试 | sparse 类型不擦除，optional/list 正确，旧 dense 接口稳定 |
 | Ops Python | 新增专用 sparse 测试模块，现有 dense smoke/full suite | layout routing、非 coalesced 导入、动态输出 owner |

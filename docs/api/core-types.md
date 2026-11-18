@@ -25,8 +25,9 @@ device, and strides, but it does not own the memory it references.
 **Design frozen; Ops API not implemented or exported yet.** RT1 implements
 the independent `infini::rt::SparseTensorView`, and
 [RT2](../sparse/08-rt2-implementation.md) exports it through the installed
-`<infini/rt.h>`. RT3's full metadata test suite and the dependent Ops integration
-remain pending. `Tensor` remains the dense alias.
+`<infini/rt.h>`. [RT3](../sparse/09-rt3-implementation.md) adds the formal metadata
+and installed-consumer regression tests. The dependent Ops integration remains
+pending. `Tensor` remains the dense alias.
 The complete [D0 contract](../sparse/06-d0-contract.md) defines validation,
 checked execution, errors, dynamic results, and ownership. The existing dense
 `TensorView` layout, hash, and equality must remain unchanged.
