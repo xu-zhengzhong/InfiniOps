@@ -311,6 +311,28 @@ VectorOptionalTensorFromPybind11Handle(const std::vector<py::object>& objs) {
   return result;
 }
 
+// Preserve the nesting of optional/list signatures without flattening a list
+// or turning an absent list into an empty one.
+template <typename T, typename PyArg>
+T NestedTensorFromPybind11Handle(const PyArg& arg) {
+  if constexpr (std::is_same_v<T, Tensor>) {
+    return TensorFromPybind11Handle(arg);
+  } else {
+    using Element = typename T::value_type;
+    if constexpr (std::is_same_v<T, std::optional<Element>>) {
+      if (!arg.has_value()) return std::nullopt;
+      return NestedTensorFromPybind11Handle<Element>(*arg);
+    } else {
+      T result;
+      result.reserve(arg.size());
+      for (const auto& item : arg) {
+        result.push_back(NestedTensorFromPybind11Handle<Element>(item));
+      }
+      return result;
+    }
+  }
+}
+
 }  // namespace infini::ops
 
 #endif

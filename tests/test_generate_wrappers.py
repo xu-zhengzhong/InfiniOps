@@ -362,12 +362,22 @@ def test_vector_fallback_does_not_override_string_overload(monkeypatch, tmp_path
     )
     monkeypatch.setattr(module, "_find_base_header", lambda op_name: base_header)
 
-    vector = module._ParsedArgument("const int", "padding")
-    string = module._ParsedArgument("const std::string", "padding")
-    vector_params = module._find_vector_int64_params("conv1d")
-
-    assert module._vector_int64_kind(vector, vector_params, set()) == "vector"
-    assert module._vector_int64_kind(string, vector_params, set()) is None
+    constructors = module._parse_operator_header("conv1d").constructors
+    clang_constructors = [
+        module._ParsedFunction(
+            [
+                module._ParsedArgument("const int", arg.spelling)
+                for arg in constructor.get_arguments()
+            ]
+        )
+        for constructor in constructors
+    ]
+    recovered = module._prefer_header_type_spellings(clang_constructors, constructors)
+    declarations, _ = module._generate_generated_dispatch_entries(
+        module._Operator("conv1d", recovered, [])
+    )
+    assert any("std::vector<int64_t> padding" in entry for entry in declarations)
+    assert any("const std::string padding" in entry for entry in declarations)
 
 
 def test_pybind_default_implementation_uses_first_active_index(monkeypatch, tmp_path):
@@ -1317,3 +1327,76 @@ def test_w4_public_api_selection_is_explicit(tmp_path):
         module._select_ops_from_config(
             {}, {name: {"headers": None, "implementations": (0,)}}, "ops.json"
         )
+
+
+@pytest.mark.parametrize(
+    "spelling,expected",
+    [
+        ("SparseTensor", "SparseTensor"),
+        ("const ::infini::rt::SparseTensorView&", "SparseTensor"),
+        (
+            "std::optional<infini::ops::SparseTensor> const&",
+            "std::optional<SparseTensor>",
+        ),
+        (
+            "const std::vector< std::optional<rt::SparseTensorView> >&",
+            "std::vector<std::optional<SparseTensor>>",
+        ),
+        (
+            "std::optional<std::vector<::infini::rt::SparseTensorView>>",
+            "std::optional<std::vector<SparseTensor>>",
+        ),
+    ],
+)
+def test_sparse_signature_survives_each_cpp_boundary(spelling, expected):
+    module = _load_generator_module()
+    node = module._ParsedFunction(
+        [
+            module._ParsedArgument("const infini::rt::TensorView&", "input"),
+            module._ParsedArgument(spelling, "mask"),
+        ]
+    )
+    op = module._Operator("probe", [node], [node])
+    decls, defs = module._generate_generated_dispatch_entries(op)
+    for entries in (decls, defs):
+        dispatch = "\n".join(entries)
+        assert (
+            f"MakeProbe(const Config& config, Tensor input, {expected} mask)"
+            in dispatch
+        )
+        assert f"const Tensor& input, const {expected}& mask) noexcept" in dispatch
+        assert "InvokeProbe(" not in dispatch
+    decls, defs = module._generate_operator_call_instantiation_entries(op)
+    for entries in (decls, defs):
+        assert f"CheckedCall<Tensor, {expected}>" in "\n".join(entries)
+    assert module._generate_legacy_c(op, []) == (None, None)
+    binding = module._generate_pybind11(op)
+    assert "TensorFromPybind11Handle(" not in binding
+    assert 'm.def("probe"' not in binding
+
+
+def test_overload_local_dense_conversion_and_defaults(tmp_path, monkeypatch):
+    module = _load_generator_module()
+    header = tmp_path / "probe.h"
+    header.write_text("""
+class Probe {
+ public:
+  void operator()(Tensor input, SparseTensor value, int mode = 3) const;
+  void operator()(Tensor input, TensorLikeMetadata value, int mode) const;
+  void operator()(Tensor input, std::optional<std::vector<Tensor>> value, int mode = 1) const;
+};
+""")
+    monkeypatch.setattr(module, "_find_base_header", lambda name: header)
+    operator = module._parse_operator_header("probe")
+    binding = module._generate_pybind11(operator)
+    assert binding.count('m.def("probe"') == 2
+    assert "TensorLikeMetadata value" in binding
+    assert "std::optional<std::vector<py::object>> value" in binding
+    assert (
+        "NestedTensorFromPybind11Handle<std::optional<std::vector<Tensor>>>(value)"
+        in binding
+    )
+    assert binding.count('py::arg("mode") = 1') == 1
+    assert 'py::arg("mode") = 3' not in binding
+    header, _ = module._generate_operator_call_instantiation_entries(operator)
+    assert "Call<Tensor, TensorLikeMetadata, int>" in "\n".join(header)

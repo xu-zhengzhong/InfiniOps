@@ -535,3 +535,25 @@ def test_inplace_schema_can_bind_to_explicit_output_signature():
 
     implicit_source = module._generate_torch_method_source("fill", implicit_bound)
     assert "at_self.fill_(value);" in implicit_source
+
+
+@pytest.mark.parametrize(
+    "sparse_type",
+    [
+        "SparseTensor",
+        "infini::rt::SparseTensorView",
+        "std::optional<SparseTensor>",
+        "std::vector<std::optional<SparseTensor>>",
+    ],
+)
+def test_dense_aten_schema_does_not_bind_sparse_base_overload(sparse_type):
+    module = _load_generator_module()
+    op = module._parse_func("abs.out(Tensor self, *, Tensor(a!) out) -> Tensor(a!)")
+    assert (
+        module._bind_base_signature(op, [(sparse_type, "input"), ("Tensor", "out")])
+        is None
+    )
+    assert (
+        module._bind_base_signature(op, [("Tensor", "input"), ("Tensor", "out")])
+        is not None
+    )

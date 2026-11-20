@@ -56,10 +56,16 @@ def test_public_operator_header_hides_sparse_provider_lookup(tmp_path):
 
     public_header = output.read_text()
     assert re.search(
-        r"static\s+ValidationResult\s+CheckedCall\s*\([^{};]*\)\s*noexcept\s*;",
+        r"static\s+ValidationResult\s+CheckedCall\s*\([^{};]*\)\s*noexcept\s*\{",
         public_header,
     )
+    assert (
+        "detail::OperatorFactory<Key>::CheckedCall(handle, config, args...)"
+        in public_header
+    )
     for name in ("MakeSparse", "CanMakeSparse"):
-        assert re.search(rf"static\s+[^;{{}}]+\b{name}\s*\([^{{}};]*\)\s*;", public_header)
+        assert re.search(
+            rf"static\s+[^;{{}}]+\b{name}\s*\([^{{}};]*\)\s*;", public_header
+        )
     assert "Provider::checked_call(handle," not in public_header
     assert "detail::ValidateSparseArguments(args...)" not in public_header

@@ -201,7 +201,8 @@ class _ParsedType:
 
 
 class _ParsedArgument:
-    def __init__(self, type_spelling, spelling):
+    def __init__(self, type_spelling, spelling, scalar_default=None):
+        self.scalar_default = scalar_default
         self.type = _ParsedType(type_spelling)
         self.spelling = spelling
 
@@ -235,6 +236,12 @@ class _OperatorExtractor:
         )
         translation_unit = index.parse(str(_find_base_header(op_name)), args=args)
 
+        parsed_operator = _parse_operator_header(op_name)
+
+        if any(d.severity >= d.Error for d in translation_unit.diagnostics):
+            # An unresolved RT/STL type can erase an entire overload in the AST.
+            return parsed_operator
+
         nodes = tuple(type(self)._find(translation_unit.cursor, op_name))
 
         constructors = []
@@ -246,7 +253,6 @@ class _OperatorExtractor:
             elif node.kind == CursorKind.CXX_METHOD and node.spelling == "operator()":
                 calls.append(node)
 
-        parsed_operator = _parse_operator_header(op_name)
         constructors = _prefer_header_type_spellings(
             constructors, parsed_operator.constructors
         )
@@ -296,10 +302,10 @@ def _prefer_header_type_spellings(functions, header_functions):
 
     for function in functions:
         names = tuple(arg.spelling for arg in function.get_arguments())
-        matches = header_by_names.get(names, ())
+        matches = header_by_names.get(names)
 
-        if len(matches) == 1:
-            aligned.append(matches[0])
+        if matches:
+            aligned.append(matches.pop(0))
         else:
             aligned.append(function)
 
@@ -375,7 +381,8 @@ def _parse_parameter_list(params):
     arguments = []
 
     for param in _split_top_level(params, ","):
-        param = _strip_default_argument(param.strip())
+        declaration, *default = _split_top_level(param, "=")
+        param = declaration.strip()
 
         if not param or param == "void":
             continue
@@ -385,7 +392,16 @@ def _parse_parameter_list(params):
         if match is None:
             raise ValueError(f"could not parse parameter {param!r}")
 
-        arguments.append(_ParsedArgument(match.group(1).strip(), match.group(2)))
+        spelling = match.group(1).strip()
+        scalar_default = None
+
+        if default and re.fullmatch(
+            r"bool|int(?:64_t|32_t|8_t|16_t)?|std::size_t|std::uint\w+_t|float|double",
+            _argument_type(spelling).cpp,
+        ):
+            scalar_default = "=".join(default).strip()
+
+        arguments.append(_ParsedArgument(spelling, match.group(2), scalar_default))
 
     return arguments
 
@@ -408,11 +424,6 @@ def _split_top_level(text, delimiter):
 
     parts.append(text[start:])
     return parts
-
-
-def _strip_default_argument(param):
-    parts = _split_top_level(param, "=")
-    return parts[0].strip()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -445,176 +456,63 @@ def _parameter_type_signature(node):
     )
 
 
-def _find_optional_tensor_params(op_name):
-    """Return a set of parameter names declared as `std::optional<Tensor>` in
-    the base header. `libclang` resolves the type to `int` when the STL
-    headers are not fully available, so we fall back to a regex scan of the
-    source text.
-    """
-    source = _find_base_header(op_name).read_text()
-
-    return set(re.findall(r"std::optional<Tensor>\s+(\w+)", source))
-
-
-def _find_optional_non_tensor_params(op_name):
-    """Return parameter names declared as non-Tensor `std::optional`.
-
-    Some generated ATen bases have overloads that reuse a parameter name across
-    different optional kinds, e.g. `clamp(..., std::optional<double> min, ...)`
-    and `clamp(..., std::optional<Tensor> min, ...)`. The optional-Tensor
-    regex fallback is name-based, so record non-Tensor optionals too to avoid
-    treating the scalar overload as a Tensor overload.
-    """
-    source = _find_base_header(op_name).read_text()
-
-    return {
-        name
-        for cpp_type, name in re.findall(r"std::optional<([^>]+)>\s+(\w+)", source)
-        if "Tensor" not in cpp_type
-    }
+# Only these leaf types have a tensor ABI. Preserve all other C++ types,
+# including identifiers that happen to contain the word Tensor.
+_TENSOR_ALIASES = {
+    "Tensor": "Tensor",
+    "infini::ops::Tensor": "Tensor",
+    "TensorView": "Tensor",
+    "rt::TensorView": "Tensor",
+    "infini::rt::TensorView": "Tensor",
+    "SparseTensor": "SparseTensor",
+    "infini::ops::SparseTensor": "SparseTensor",
+    "SparseTensorView": "SparseTensor",
+    "rt::SparseTensorView": "SparseTensor",
+    "infini::rt::SparseTensorView": "SparseTensor",
+}
 
 
-def _find_vector_tensor_params(op_name):
-    """Return a set of parameter names declared as `std::vector<Tensor>` in
-    the base header.
-    """
-    source = _find_base_header(op_name).read_text()
+@dataclasses.dataclass(frozen=True)
+class _ArgumentType:
+    leaf: str
+    containers: tuple[str, ...]
 
-    return set(re.findall(r"std::vector\s*<\s*Tensor\s*>\s+(\w+)", source))
+    def wrap(self, leaf):
+        for container in reversed(self.containers):
+            leaf = f"{container}<{leaf}>"
+
+        return leaf
+
+    @property
+    def is_tensor(self):
+        return self.leaf in ("Tensor", "SparseTensor")
+
+    @property
+    def cpp(self):
+        return self.wrap(self.leaf)
 
 
-def _find_optional_vector_tensor_params(op_name):
-    """Return params declared as `std::vector<std::optional<Tensor>>`."""
-    source = _find_base_header(op_name).read_text()
+@functools.lru_cache(maxsize=None)
+def _argument_type(spelling):
+    spelling = " ".join(spelling.split()).rstrip("&").strip()
+    spelling = spelling.removeprefix("const ").removesuffix(" const")
+    spelling = re.sub(r"\s*(::|[<>])\s*", r"\1", spelling)
+    containers = []
 
-    return set(
-        re.findall(
-            r"std::vector\s*<\s*std::optional\s*<\s*Tensor\s*>\s*>\s+(\w+)",
-            source,
-        )
+    while match := re.fullmatch(r"(?:::)?std::(optional|vector)<(.+)>", spelling):
+        containers.append(f"std::{match[1]}")
+        spelling = match[2]
+
+    leaf = _TENSOR_ALIASES.get(spelling.removeprefix("::"), spelling)
+
+    return _ArgumentType(leaf, tuple(containers))
+
+
+def _has_sparse_parameter(node):
+    return any(
+        _argument_type(arg.type.spelling).leaf == "SparseTensor"
+        for arg in node.get_arguments()
     )
-
-
-def _vector_tensor_kind(arg, vector_params, optional_vector_params):
-    """Classify a Tensor vector while preserving optional element types."""
-    spelling = "".join(arg.type.spelling.split())
-    spelling = spelling.removeprefix("const").removesuffix("&")
-
-    if (
-        spelling.startswith("std::vector<")
-        and "std::optional<" in spelling
-        and ("Tensor" in spelling or "TensorView" in spelling)
-    ):
-        return "optional"
-
-    if spelling.startswith("std::vector<") and (
-        "Tensor" in spelling or "TensorView" in spelling
-    ):
-        return "vector"
-
-    if arg.spelling in optional_vector_params:
-        return "optional"
-
-    if arg.spelling in vector_params:
-        return "vector"
-
-    return None
-
-
-def _find_vector_int64_params(op_name):
-    """Return a set of parameter names declared as `std::vector<int64_t>` in
-    the base header.
-
-    libclang on systems where the STL headers are not fully indexable
-    silently falls back to reporting the type as `int` for these params,
-    which then leaks into the generated bindings as `const int padding`
-    instead of `const std::vector<int64_t> padding` and breaks the call
-    to the base operator.  Regex-scan the source so the binding's
-    parameter type comes from the actual declaration.
-    """
-    source = _find_base_header(op_name).read_text()
-
-    return set(re.findall(r"std::vector<int64_t>\s+(\w+)", source))
-
-
-def _find_optional_vector_int64_params(op_name):
-    """Return params declared as `std::optional<std::vector<int64_t>>`.
-
-    libclang can report these as plain `int`, just like non-optional vector
-    params, so scan the base header to preserve the generated API signature.
-    """
-    source = _find_base_header(op_name).read_text()
-
-    return set(
-        re.findall(
-            r"std::optional\s*<\s*std::vector\s*<\s*int64_t\s*>\s*>\s+(\w+)",
-            source,
-        )
-    )
-
-
-def _vector_int64_kind(arg, vector_params, optional_vector_params):
-    """Classify a vector parameter, preferring its overload-local type."""
-    spelling = "".join(arg.type.spelling.split())
-    spelling = spelling.removeprefix("const").removesuffix("&")
-
-    if spelling == "std::optional<std::vector<int64_t>>":
-        return "optional"
-
-    if spelling == "std::vector<int64_t>":
-        return "vector"
-
-    if spelling != "int":
-        return None
-
-    if arg.spelling in optional_vector_params:
-        return "optional"
-
-    if arg.spelling in vector_params:
-        return "vector"
-
-    return None
-
-
-def _find_tensor_params(op_name):
-    source = _find_base_header(op_name).read_text()
-
-    params = set()
-    params.update(_find_optional_vector_tensor_params(op_name))
-    params.update(re.findall(r"(?:^|[,(]\s*)(?:const\s+)?Tensor\s+(\w+)", source))
-    params.update(_find_optional_tensor_params(op_name))
-    params.update(_find_vector_tensor_params(op_name))
-
-    return params
-
-
-def _find_params_with_defaults(op_name):
-    """Return scalar defaults found in operator parameter declarations."""
-    class_name = _op_class_name(op_name)
-    source = _strip_cpp_comments(_find_base_header(op_name).read_text())
-    class_body = _extract_class_body(source, class_name)
-    parameter_lists = []
-
-    for pattern in (
-        rf"(?:explicit\s+)?{class_name}\s*\(",
-        r"virtual\s+void\s+operator\s*\(\s*\)\s*\(",
-    ):
-        parameter_lists.extend(_find_signature_parameters(class_body, pattern))
-
-    # Restrict the legacy scalar-default regex to constructor/call parameter
-    # lists.  Scanning the whole class body also picks up constants and local
-    # variables, while scanning raw source can pick up prose in comments.
-    source = ",\n".join(parameter_lists) + ",\n"
-    mapping = {}
-
-    for name, default in re.findall(
-        r"\b(?:bool|int(?:64_t|32_t|8_t|16_t)?|std::size_t|std::uint\w+_t|"
-        r"float|double)\s+(\w+)\s*=\s*([^,\)]+?)\s*(?:,|\))",
-        source,
-    ):
-        mapping[name] = default.strip()
-
-    return mapping
 
 
 def _is_data_type_spelling(spelling):
@@ -624,65 +522,28 @@ def _is_data_type_spelling(spelling):
 
 
 def _generate_pybind11(operator):
-    optional_tensor_params = _find_optional_tensor_params(operator.name)
-    optional_non_tensor_params = _find_optional_non_tensor_params(operator.name)
-    vector_tensor_params = _find_vector_tensor_params(operator.name)
-    optional_vector_tensor_params = _find_optional_vector_tensor_params(operator.name)
-    vector_int64_params = _find_vector_int64_params(operator.name)
-    optional_vector_int64_params = _find_optional_vector_int64_params(operator.name)
-    params_with_defaults = _find_params_with_defaults(operator.name)
+    # Sparse Python imports require the layout/owner bridge. Only register
+    # overloads for which a converter exists.
+    dense_constructors = [
+        n for n in operator.constructors if not _has_sparse_parameter(n)
+    ]
+    dense_calls = [n for n in operator.calls if not _has_sparse_parameter(n)]
 
-    def _is_optional_vector_tensor(arg):
-        return (
-            _vector_tensor_kind(
-                arg, vector_tensor_params, optional_vector_tensor_params
-            )
-            == "optional"
-        )
-
-    def _is_optional_tensor(arg):
-        spelling = arg.type.spelling
-
-        if _is_known_non_tensor_type(spelling):
-            return False
-
-        if _is_optional_vector_tensor(arg):
-            return False
-
-        if "std::optional" in spelling:
-            return "Tensor" in spelling
-
-        if arg.spelling in optional_non_tensor_params:
-            return False
-
-        return arg.spelling in optional_tensor_params
-
-    def _is_optional(arg):
-        spelling = "".join(arg.type.spelling.split()).removeprefix("const")
-        return spelling.startswith("std::optional<")
-
-    def _is_optional_vector_int64(arg):
-        return (
-            _vector_int64_kind(arg, vector_int64_params, optional_vector_int64_params)
-            == "optional"
-        )
-
-    def _is_vector_tensor(arg):
-        return (
-            _vector_tensor_kind(
-                arg, vector_tensor_params, optional_vector_tensor_params
-            )
-            == "vector"
-        )
-
-    def _is_vector_int64(arg):
-        return (
-            _vector_int64_kind(arg, vector_int64_params, optional_vector_int64_params)
-            == "vector"
-        )
-
-    def _is_data_type(arg):
-        return _is_data_type_spelling(arg.type.spelling)
+    dense_converters = {
+        "Tensor": ("py::object", "TensorFromPybind11Handle"),
+        "std::optional<Tensor>": (
+            "std::optional<py::object>",
+            "OptionalTensorFromPybind11Handle",
+        ),
+        "std::vector<Tensor>": (
+            "std::vector<py::object>",
+            "VectorTensorFromPybind11Handle",
+        ),
+        "std::vector<std::optional<Tensor>>": (
+            "std::vector<py::object>",
+            "VectorOptionalTensorFromPybind11Handle",
+        ),
+    }
 
     def _generate_params(node):
         parts = []
@@ -691,25 +552,24 @@ def _generate_pybind11(operator):
             if arg.spelling == "stream":
                 continue
 
-            if _is_optional_vector_tensor(arg):
-                parts.append(f"std::vector<py::object> {arg.spelling}")
-            elif _is_optional_tensor(arg):
-                parts.append(f"std::optional<py::object> {arg.spelling}")
-            elif _is_vector_tensor(arg):
-                parts.append(f"std::vector<py::object> {arg.spelling}")
-            elif _is_optional_vector_int64(arg):
-                parts.append(
-                    f"const std::optional<std::vector<int64_t>> {arg.spelling}"
-                )
-            elif _is_vector_int64(arg):
-                parts.append(f"const std::vector<int64_t> {arg.spelling}")
-            elif _is_data_type(arg):
-                parts.append(f"py::object {arg.spelling}")
+            kind = _argument_type(arg.type.spelling)
+
+            if kind.is_tensor:
+                if kind.cpp in dense_converters:
+                    param = dense_converters[kind.cpp][0]
+                else:
+                    param = kind.wrap("py::object")
+            elif kind.cpp in (
+                "std::vector<int64_t>",
+                "std::optional<std::vector<int64_t>>",
+            ):
+                param = f"const {kind.cpp}"
+            elif _is_data_type_spelling(arg.type.spelling):
+                param = "py::object"
             else:
-                param = arg.type.spelling.replace("const Tensor", "py::object").replace(
-                    "Tensor", "py::object"
-                )
-                parts.append(f"{param} {arg.spelling}")
+                param = arg.type.spelling
+
+            parts.append(f"{param} {arg.spelling}")
 
         return ", ".join(parts)
 
@@ -727,15 +587,9 @@ def _generate_pybind11(operator):
                 and arg.spelling == preconverted_tensor_arg.spelling
             ):
                 args.append(preconverted_tensor_name)
-            elif _is_optional_vector_tensor(arg):
-                args.append(f"VectorOptionalTensorFromPybind11Handle({arg.spelling})")
-            elif _is_optional_tensor(arg):
-                args.append(f"OptionalTensorFromPybind11Handle({arg.spelling})")
-            elif _is_vector_tensor(arg):
-                args.append(f"VectorTensorFromPybind11Handle({arg.spelling})")
-            elif "Tensor" in arg.type.spelling:
-                args.append(f"TensorFromPybind11Handle({arg.spelling})")
-            elif _is_data_type(arg):
+            elif _argument_type(arg.type.spelling).is_tensor:
+                args.append(_tensor_conversion_expr(arg))
+            elif _is_data_type_spelling(arg.type.spelling):
                 args.append(f"DataTypeFromPybind11Handle({arg.spelling})")
             else:
                 args.append(arg.spelling)
@@ -750,12 +604,12 @@ def _generate_pybind11(operator):
         for arg in node.get_arguments():
             if arg.spelling == "stream":
                 continue
-            if _is_optional_tensor(arg) or _is_optional_vector_tensor(arg):
-                continue
-            if _is_vector_tensor(arg):
+            if _argument_type(arg.type.spelling).cpp in (
+                "Tensor",
+                "std::vector<Tensor>",
+            ):
                 return arg
-            if "Tensor" in arg.type.spelling:
-                return arg
+
         return None
 
     def _unique_local_name(node, base):
@@ -766,9 +620,14 @@ def _generate_pybind11(operator):
         return name
 
     def _tensor_conversion_expr(arg):
-        if _is_vector_tensor(arg):
-            return f"VectorTensorFromPybind11Handle({arg.spelling})"
-        return f"TensorFromPybind11Handle({arg.spelling})"
+        cpp = _argument_type(arg.type.spelling).cpp
+
+        if cpp in dense_converters:
+            converter = dense_converters[cpp][1]
+        else:
+            converter = f"NestedTensorFromPybind11Handle<{cpp}>"
+
+        return f"{converter}({arg.spelling})"
 
     def _default_impl_index_expr(node, converted_first_tensor_name=None):
         first_tensor_arg = _first_tensor_arg(node)
@@ -777,12 +636,18 @@ def _generate_pybind11(operator):
 
         if converted_first_tensor_name is not None:
             first_tensor = converted_first_tensor_name
-            if _is_vector_tensor(first_tensor_arg):
+            if (
+                _argument_type(first_tensor_arg.type.spelling).cpp
+                == "std::vector<Tensor>"
+            ):
                 first_tensor += ".at(0)"
             device_type = f"{first_tensor}.device().type()"
         else:
             first_tensor = first_tensor_arg.spelling
-            if _is_vector_tensor(first_tensor_arg):
+            if (
+                _argument_type(first_tensor_arg.type.spelling).cpp
+                == "std::vector<Tensor>"
+            ):
                 first_tensor += ".at(0)"
             device_type = f"DeviceFromPybind11Handle({first_tensor}).type()"
 
@@ -805,12 +670,10 @@ def _generate_pybind11(operator):
             if arg.spelling == "stream":
                 continue
 
-            if _is_optional(arg):
+            if _argument_type(arg.type.spelling).containers[:1] == ("std::optional",):
                 parts.append(f'py::arg("{arg.spelling}") = py::none()')
-            elif arg.spelling in params_with_defaults:
-                parts.append(
-                    f'py::arg("{arg.spelling}") = {params_with_defaults[arg.spelling]}'
-                )
+            elif getattr(arg, "scalar_default", None) is not None:
+                parts.append(f'py::arg("{arg.spelling}") = {arg.scalar_default}')
             else:
                 parts.append(f'py::arg("{arg.spelling}")')
 
@@ -927,17 +790,13 @@ def _generate_pybind11(operator):
 
             total += 1
 
-            if (
-                _is_optional_tensor(arg)
-                or _is_vector_tensor(arg)
-                or "Tensor" in arg.type.spelling
-            ):
+            if _argument_type(arg.type.spelling).is_tensor:
                 object_like += 1
 
         return (object_like, -total)
 
-    constructors = sorted(operator.constructors, key=_overload_order_key)
-    operator_calls = sorted(operator.calls, key=_overload_order_key)
+    constructors = sorted(dense_constructors, key=_overload_order_key)
+    operator_calls = sorted(dense_calls, key=_overload_order_key)
 
     inits = "\n".join(_generate_init(constructor) for constructor in constructors)
     calls = "\n".join(_generate_call(operator.name, call) for call in operator_calls)
@@ -1011,6 +870,15 @@ void Bind{symbol_name}(py::module& m) {{
 
 
 def _generate_legacy_c(operator, paths):
+    # The legacy descriptor and data pointer ABI only represents dense tensors.
+    constructors = [n for n in operator.constructors if not _has_sparse_parameter(n)]
+    calls = [n for n in operator.calls if not _has_sparse_parameter(n)]
+
+    if not constructors or not calls:
+        return None, None
+
+    operator = _Operator(operator.name, constructors, calls)
+
     op_type = _op_cpp_type(operator.name)
     symbol_name = _op_symbol_name(operator.name)
 
@@ -1165,10 +1033,15 @@ __C __export {_generate_destroy_func_decl(operator)};
             return inner
 
         def _handle_tensor(spelling):
-            if call:
-                return spelling.replace("Tensor", "void *")
+            kind = _argument_type(spelling)
 
-            return spelling.replace("Tensor", "infiniopTensorDescriptor_t")
+            if not kind.is_tensor:
+                return spelling
+
+            prefix = "const " if spelling.strip().startswith("const ") else ""
+            leaf = "void *" if call else "infiniopTensorDescriptor_t"
+
+            return prefix + kind.wrap(leaf)
 
         def _handle_std_optional(spelling):
             return _unwrap_std_optional(spelling)
@@ -1192,7 +1065,7 @@ __C __export {_generate_destroy_func_decl(operator)};
             if _is_data_type_spelling(arg.type.spelling)
             else (
                 _generate_tensor_caster(arg.spelling, is_data=is_data)
-                if "Tensor" in arg.type.spelling
+                if _argument_type(arg.type.spelling).is_tensor
                 else arg.spelling
             )
             for arg in node.get_arguments()
@@ -1209,71 +1082,6 @@ __C __export {_generate_destroy_func_decl(operator)};
 
 
 def _generate_generated_dispatch_entries(operator):
-    optional_tensor_params = _find_optional_tensor_params(operator.name)
-    optional_non_tensor_params = _find_optional_non_tensor_params(operator.name)
-    tensor_params = _find_tensor_params(operator.name)
-    vector_tensor_params = _find_vector_tensor_params(operator.name)
-    optional_vector_tensor_params = _find_optional_vector_tensor_params(operator.name)
-    vector_int64_params = _find_vector_int64_params(operator.name)
-    optional_vector_int64_params = _find_optional_vector_int64_params(operator.name)
-
-    def _is_optional_vector_tensor(arg):
-        return (
-            _vector_tensor_kind(
-                arg, vector_tensor_params, optional_vector_tensor_params
-            )
-            == "optional"
-        )
-
-    def _is_optional_tensor(arg):
-        spelling = arg.type.spelling
-
-        if _is_known_non_tensor_type(spelling):
-            return False
-
-        if _is_optional_vector_tensor(arg):
-            return False
-
-        if "std::optional" in spelling:
-            return "Tensor" in spelling
-
-        if arg.spelling in optional_non_tensor_params:
-            return False
-
-        return arg.spelling in optional_tensor_params
-
-    def _is_optional_vector_int64(arg):
-        return (
-            _vector_int64_kind(arg, vector_int64_params, optional_vector_int64_params)
-            == "optional"
-        )
-
-    def _is_vector_tensor(arg):
-        return (
-            _vector_tensor_kind(
-                arg, vector_tensor_params, optional_vector_tensor_params
-            )
-            == "vector"
-        )
-
-    def _is_vector_int64(arg):
-        return (
-            _vector_int64_kind(arg, vector_int64_params, optional_vector_int64_params)
-            == "vector"
-        )
-
-    def _is_tensor(arg):
-        if arg.spelling in optional_non_tensor_params:
-            return False
-
-        if "Tensor" in arg.type.spelling or "TensorView" in arg.type.spelling:
-            return True
-
-        if _is_known_non_tensor_type(arg.type.spelling):
-            return False
-
-        return arg.spelling in tensor_params
-
     def _generate_params(node):
         parts = []
 
@@ -1281,20 +1089,13 @@ def _generate_generated_dispatch_entries(operator):
             if arg.spelling == "stream":
                 continue
 
-            if _is_optional_vector_tensor(arg):
-                parts.append(f"std::vector<std::optional<Tensor>> {arg.spelling}")
-            elif _is_optional_tensor(arg):
-                parts.append(f"std::optional<Tensor> {arg.spelling}")
-            elif _is_vector_tensor(arg):
-                parts.append(f"std::vector<Tensor> {arg.spelling}")
-            elif _is_optional_vector_int64(arg):
-                parts.append(f"std::optional<std::vector<int64_t>> {arg.spelling}")
-            elif _is_vector_int64(arg):
-                parts.append(f"std::vector<int64_t> {arg.spelling}")
-            elif _is_tensor(arg):
-                parts.append(f"Tensor {arg.spelling}")
-            else:
-                parts.append(f"{arg.type.spelling} {arg.spelling}")
+            kind = _argument_type(arg.type.spelling)
+            canonical = kind.is_tensor or kind.cpp in (
+                "std::vector<int64_t>",
+                "std::optional<std::vector<int64_t>>",
+            )
+            spelling = kind.cpp if canonical else arg.type.spelling
+            parts.append(f"{spelling} {arg.spelling}")
 
         return ", ".join(parts)
 
@@ -1376,6 +1177,22 @@ void ClearCacheFor{symbol_name}() {{
             continue
 
         emitted_call_params.add(params)
+        if _has_sparse_parameter(call):
+            checked_params = ", ".join(
+                f"const {_argument_type(arg.type.spelling).cpp}& {arg.spelling}"
+                for arg in call.get_arguments()
+                if arg.spelling != "stream"
+            )
+            signature = (
+                f"ValidationResult CheckedCall{symbol_name}(const Handle& handle, "
+                f"const Config& config, {checked_params}) noexcept"
+            )
+            declarations.append(f"{signature};")
+            definitions.append(
+                f"{signature} {{\n  return Operator<{op_type}>::CheckedCall(handle, config, {args});\n}}"
+            )
+            continue
+
         declarations.append(
             f"void Invoke{symbol_name}(const "
             f"{_append_optional_params(f'{op_type}& op', params)});"
@@ -1479,123 +1296,9 @@ namespace infini::ops::generated_dispatch {{
 """
 
 
-def _strip_top_level_const(type_spelling):
-    type_spelling = " ".join(type_spelling.split())
-
-    while type_spelling.startswith("const "):
-        type_spelling = type_spelling[len("const ") :]
-
-    return type_spelling
-
-
-def _is_known_non_tensor_type(type_spelling):
-    type_spelling = _strip_top_level_const(type_spelling)
-
-    if "Tensor" in type_spelling or "TensorView" in type_spelling:
-        return False
-
-    if type_spelling in {
-        "bool",
-        "double",
-        "float",
-        "int64_t",
-        "std::size_t",
-        "std::string",
-    }:
-        return True
-
-    return type_spelling.startswith("std::optional<")
-
-
 def _generate_operator_call_instantiation_entries(operator):
-    optional_tensor_params = _find_optional_tensor_params(operator.name)
-    optional_non_tensor_params = _find_optional_non_tensor_params(operator.name)
-    tensor_params = _find_tensor_params(operator.name)
-    optional_vector_tensor_params = _find_optional_vector_tensor_params(operator.name)
-    vector_tensor_params = _find_vector_tensor_params(operator.name)
-    vector_int64_params = _find_vector_int64_params(operator.name)
-    optional_vector_int64_params = _find_optional_vector_int64_params(operator.name)
-
-    def _is_optional_vector_tensor(arg):
-        return (
-            _vector_tensor_kind(
-                arg, vector_tensor_params, optional_vector_tensor_params
-            )
-            == "optional"
-        )
-
-    def _is_optional_tensor(arg):
-        if _is_optional_vector_tensor(arg):
-            return False
-
-        spelling = arg.type.spelling
-
-        if _is_known_non_tensor_type(spelling):
-            return False
-
-        if "std::optional" in spelling:
-            return "Tensor" in spelling or "TensorView" in spelling
-
-        if arg.spelling in optional_non_tensor_params:
-            return False
-
-        if arg.spelling in optional_tensor_params:
-            return True
-
-        return False
-
-    def _is_optional_vector_int64(arg):
-        return (
-            _vector_int64_kind(arg, vector_int64_params, optional_vector_int64_params)
-            == "optional"
-        )
-
-    def _is_vector_tensor(arg):
-        return (
-            _vector_tensor_kind(
-                arg, vector_tensor_params, optional_vector_tensor_params
-            )
-            == "vector"
-        )
-
-    def _is_vector_int64(arg):
-        return (
-            _vector_int64_kind(arg, vector_int64_params, optional_vector_int64_params)
-            == "vector"
-        )
-
-    def _is_tensor(arg):
-        if arg.spelling in optional_non_tensor_params:
-            return False
-
-        if "Tensor" in arg.type.spelling or "TensorView" in arg.type.spelling:
-            return True
-
-        if _is_known_non_tensor_type(arg.type.spelling):
-            return False
-
-        return arg.spelling in tensor_params
-
     def _normalized_type(arg):
-        if _is_optional_vector_tensor(arg):
-            return "std::vector<std::optional<Tensor>>"
-
-        if _is_optional_tensor(arg):
-            return "std::optional<Tensor>"
-
-        if _is_vector_tensor(arg):
-            return "std::vector<Tensor>"
-
-        if _is_optional_vector_int64(arg):
-            return "std::optional<std::vector<int64_t>>"
-
-        if _is_vector_int64(arg):
-            return "std::vector<int64_t>"
-
-        if _is_tensor(arg):
-            return "Tensor"
-
-        return _strip_top_level_const(arg.type.spelling)
+        return _argument_type(arg.type.spelling).cpp
 
     def _generate_template_arguments(node):
         return ", ".join(
@@ -1659,6 +1362,19 @@ def _generate_operator_call_instantiation_entries(operator):
             "const Handle& handle, const Config& config", params
         )
         args = [arg for arg in call.get_arguments() if arg.spelling != "stream"]
+        if _has_sparse_parameter(call):
+            checked = f"ValidationResult Operator<{op_type}>::CheckedCall<{template_arguments}>({function_params}) noexcept;"
+            _append_unique(f"extern template {checked}", f"template {checked}")
+            factory_declarations.append(
+                f"  static ValidationResult CheckedCall({function_params}) noexcept;"
+            )
+            factory_definitions.append(
+                f"ValidationResult detail::OperatorFactory<{op_type}>::CheckedCall({function_params}) noexcept {{\n"
+                f"  return Operator<{op_type}>::CheckedCall(handle, config, "
+                f"{', '.join(arg.spelling for arg in args)});\n}}"
+            )
+            continue
+
         first_arg = args[0]
         rest_args = args[1:]
         instantiation = (
@@ -1719,6 +1435,29 @@ def _generate_operator_call_instantiation_entries(operator):
         )
         formal_params = _append_optional_params("const Config& config", params)
         arguments = ", ".join(arg.spelling for arg in args)
+        if _has_sparse_parameter(constructor):
+            # Suppress consumer-side copies of the exact specializations called
+            # by the factory, including in unoptimized builds. The two existing
+            # dense-first overloads take their first argument by value.
+            make_params = formal_params
+
+            if _normalized_type(args[0]) in ("Tensor", "std::vector<Tensor>"):
+                first, *rest = args
+                make_params = ", ".join(
+                    [
+                        "const Config& config",
+                        f"const {_normalized_type(first)} {first.spelling}",
+                    ]
+                    + [f"const {_normalized_type(arg)}& {arg.spelling}" for arg in rest]
+                )
+
+            for result, method in (
+                (f"std::unique_ptr<Operator<{op_type}>>", "Make"),
+                ("bool", "CanMake"),
+            ):
+                entry = f"{result} Operator<{op_type}>::{method}({make_params});"
+                _append_unique(f"extern template {entry}", f"template {entry}")
+
         factory_declarations.extend(
             [
                 f"  static std::unique_ptr<Operator<{op_type}>> Make({formal_params});",
@@ -2364,14 +2103,15 @@ if __name__ == "__main__":
             _write_text_if_changed(binding_source_path, artifact["binding_source"])
             expected_binding_files.add(binding_source_path)
 
-        source_path.mkdir(exist_ok=True)
-        legacy_source_path = _GENERATED_SRC_DIR / op_name / "operator.cc"
-        _write_text_if_changed(legacy_source_path, artifact["legacy_c_source"])
-        expected_generated_src_files.add(legacy_source_path)
+        if artifact["legacy_c_source"] is not None:
+            source_path.mkdir(exist_ok=True)
+            legacy_source_path = _GENERATED_SRC_DIR / op_name / "operator.cc"
+            _write_text_if_changed(legacy_source_path, artifact["legacy_c_source"])
+            expected_generated_src_files.add(legacy_source_path)
 
-        include_path = _INCLUDE_DIR / header_name
-        _write_text_if_changed(include_path, artifact["legacy_c_header"])
-        expected_include_files.add(include_path)
+            include_path = _INCLUDE_DIR / header_name
+            _write_text_if_changed(include_path, artifact["legacy_c_header"])
+            expected_include_files.add(include_path)
 
         bind_func_names.append(bind_func_name)
 

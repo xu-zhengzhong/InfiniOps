@@ -264,11 +264,33 @@ def generate_public_operator_header(source: Path, output: Path) -> None:
         source.read_text(),
         _CALL_SIGNATURE_RE,
         "Operator::Call",
-        " {\n    return detail::OperatorFactory<Key>::Call(handle, config, args...);\n  }",
+        """ {
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      throw std::invalid_argument("sparse execution requires CheckedCall");
+    } else {
+      return detail::OperatorFactory<Key>::Call(handle, config, args...);
+    }
+  }""",
     )
     for name, signature in _PROVIDER_SIGNATURES:
         replacement = ";"
-        if name.startswith("Operator::Make(") or name.startswith("Operator::CanMake("):
+        if name == "Operator::CheckedCall":
+            replacement = """ {
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      try {
+        return detail::OperatorFactory<Key>::CheckedCall(handle, config, args...);
+      } catch (const std::bad_alloc&) {
+        return {ValidationCode::kAllocationFailure};
+      } catch (...) {
+        return {ValidationCode::kExecutionFailure};
+      }
+    } else {
+      return {ValidationCode::kInvalidMetadata};
+    }
+  }"""
+        elif name.startswith("Operator::Make(") or name.startswith(
+            "Operator::CanMake("
+        ):
             method = "CanMake" if "CanMake" in name else "Make"
             first = "tensors" if "vector<Tensor>" in name else "tensor"
             replacement = (
@@ -276,6 +298,11 @@ def generate_public_operator_header(source: Path, output: Path) -> None:
                 f"{method}(config, {first}, args...);\n  }}"
             )
         public_text = _hide_definition(public_text, signature, name, replacement)
+    # Configless and sparse-first overloads also cross the factory boundary.
+    for method in ("Make", "CanMake"):
+        public_text = public_text.replace(
+            f"return {method}Sparse(", f"return detail::OperatorFactory<Key>::{method}("
+        )
     public_text = public_text.replace('#include "host_range_profiler.h"\n', "")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(public_text)

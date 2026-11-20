@@ -1,6 +1,8 @@
 import json
 import os
+import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -29,6 +31,89 @@ def test_cpp_operator_call_instantiation_smoke(tmp_path):
     )
     _run(["cmake", "--build", str(build_dir)])
     _run([str(build_dir / "add_smoke")])
+
+
+def test_installed_sparse_codegen_consumer(tmp_path):
+    prefixes = _install_prefixes()
+    root = Path(__file__).resolve().parents[1]
+    fixture = root / "tests/cpp/sparse_codegen"
+    base = tmp_path / "src/base"
+    provider = tmp_path / "src/cpu"
+    base.mkdir(parents=True)
+    provider.mkdir()
+    shutil.copy(fixture / "sparse_probe.h", base)
+    shutil.copy(fixture / "provider.h", provider)
+    _run(
+        [
+            sys.executable,
+            str(root / "scripts/generate_wrappers.py"),
+            "--devices",
+            "cpu",
+            "--ops",
+            "sparse_probe",
+            "--strict-ops",
+        ],
+        cwd=tmp_path,
+    )
+
+    generated = tmp_path / "generated"
+    includes = [f"-I{prefix / 'include'}" for prefix in prefixes]
+    library_dirs = [
+        _library_dir(prefixes, name) for name in ("libinfiniops.so", "libinfinirt.so")
+    ]
+    libraries = [
+        *(f"-L{path}" for path in library_dirs),
+        *(f"-Wl,-rpath,{path}" for path in library_dirs),
+        "-linfiniops",
+        "-linfinirt",
+    ]
+    compiler = [_compiler("CXX", "c++"), "-std=c++17", "-Werror"]
+    _run(
+        [
+            *compiler,
+            "-fPIC",
+            "-shared",
+            "-Wl,-z,defs",
+            "-DWITH_CPU=1",
+            f"-I{root / 'src'}",
+            f"-I{base.parent}",
+            f"-I{generated / 'include'}",
+            f"-I{root}",
+            f"-I{tmp_path}",
+            f"-I{generated / 'bindings'}",
+            *includes,
+            str(generated / "src/operator_call_instantiations_0.cc"),
+            str(generated / "bindings/generated_dispatch_0.cc"),
+            *libraries,
+            "-o",
+            str(tmp_path / "libprobe.so"),
+        ]
+    )
+
+    # Overlay only the two operator-specific installed headers. The consumer
+    # sees the real installed umbrella/core headers and no provider definitions.
+    include = tmp_path / "install/include"
+    (include / "base").mkdir(parents=True)
+    shutil.copy(base / "sparse_probe.h", include / "base")
+    shutil.copytree(generated / "include/infini", include / "infini")
+    for optimization in ("-O0", "-O2"):
+        binary = tmp_path / f"consumer{optimization}"
+        _run(
+            [
+                *compiler,
+                optimization,
+                f"-I{include}",
+                *includes,
+                str(fixture / "consumer.cc"),
+                f"-L{tmp_path}",
+                "-lprobe",
+                f"-Wl,-rpath,{tmp_path}",
+                *libraries,
+                "-o",
+                str(binary),
+            ]
+        )
+        _run([str(binary)])
 
 
 def test_cpp_operator_call_trace_is_json(tmp_path):
