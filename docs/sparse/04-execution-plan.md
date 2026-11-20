@@ -1,6 +1,6 @@
 # 分阶段执行计划
 
-本页列出实现任务；**D0 / P0 文档契约已完成冻结**，见 [D0 决议及走查](06-d0-contract.md)。RT1 源码实现、RT2 安装导出与 RT3 正式元数据测试集已完成，范围见 [RT1](07-rt1-implementation.md)、[RT2](08-rt2-implementation.md) 和 [RT3 实现记录](09-rt3-implementation.md)；全部 Ops 后续任务仍未完成。阶段以依赖和验收门槛排序，不给出未经团队规模、硬件和供应商 SDK 确认的日期承诺。
+本页列出实现任务；**D0 / P0 文档契约已完成冻结**，见 [D0 决议及走查](06-d0-contract.md)。RT1 源码实现、RT2 安装导出与 RT3 正式元数据测试集已完成，范围见 [RT1](07-rt1-implementation.md)、[RT2](08-rt2-implementation.md) 和 [RT3 实现记录](09-rt3-implementation.md)。OP1 参数、元数据缓存键与 checked 分派基础设施已完成，见 [OP1 实现记录](10-op1-implementation.md)；OP2 及后续任务仍未完成，P1/P2 尚未达到出口。阶段以依赖和验收门槛排序，不给出未经团队规模、硬件和供应商 SDK 确认的日期承诺。
 
 ## 阶段与交付范围
 
@@ -17,7 +17,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 
 ## 任务拆分与合并顺序
 
-路径以仓库根为起点；除已标记完成的 RT1–RT3 外，“新增”表示拟议文件，不是当前存在的实现。文件名可在 P0 按仓库命名规范调整，但职责和交付要求不能丢失。
+路径以仓库根为起点；除已标记完成的 RT1–RT3、OP1 外，“新增”表示拟议文件，不是当前存在的实现。文件名可在 P0 按仓库命名规范调整，但职责和交付要求不能丢失。
 
 | ID | 仓库 / 主要文件 | 交付 | 依赖与验收 |
 | --- | --- | --- | --- |
@@ -25,7 +25,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 | RT1 | InfiniRT：`src/tensor_layout.h`、`src/sparse_tensor_view.h` / `.cc` | **源码实现已完成**：独立布局、组件描述和 checked metadata-only 工厂；不依赖 Torch/稀疏供应商库 | D0；dense `TensorView` 对象布局与 hash/equality 不变；[实现记录](07-rt1-implementation.md) |
 | RT2 | InfiniRT：`scripts/generate_public_headers.py`、`CMakeLists.txt`、`tests/install_consumer_smoke.cc`；复用 `src/CMakeLists.txt` 安装链 | **安装导出已完成**：umbrella、include 重写、新类型导出及增量生成依赖 | RT1；安装后仅 include `<infini/rt.h>` 可用；[实现记录](08-rt2-implementation.md) |
 | RT3 | InfiniRT：`tests/test_sparse_tensor_view.cc`、`tests/CMakeLists.txt`、`tests/install_consumer_smoke.cc` | **正式测试已完成**：元数据/溢出/设备/空组件测试；dense 回归和安装消费者 | RT1–RT2；Release 下错误输入也被拒绝；[实现记录](09-rt3-implementation.md) |
-| OP1 | `src/tensor.h` 或新增 sparse alias 头；`src/operator.h`、`src/tuning.h` | 参数 traits、设备/能力检查、sparse metadata cache；默认禁用 sparse tuning | RT2；不同 layout/indices 不误复用；明确 checked entry 状态 |
+| OP1 | `src/tensor.h`、`src/sparse.h`、`src/operator.h`、`src/tuning.h`；公开头生成的新增入口声明化 | **基础设施已完成**：参数 traits、设备/能力检查、无指针 sparse metadata key、checked 分派；禁用 sparse tuning | RT2；layout 区分、每次 checked 调用重验且不复用结构分析、明确错误状态；[实现及验证边界](10-op1-implementation.md) |
 | OP2 | `scripts/generate_wrappers.py`、`scripts/generate_public_operator_header.py` | 显式 dense/sparse 类型分类、overload/optional/list 保真、公开实例化 | RT2，可与 OP1 并行；新类型不降为 dense，旧 dense 输出稳定 |
 | OP3 | `src/pybind11_utils.h`、绑定生成与相应测试 | layout-aware Python 路由、组件 owner、checked import | OP1–OP2；未 coalesced COO 导入不被无声规范化 |
 | OP4 | 新增 sparse validation、`src/base/` 中 ToDense / SparseMm 类、`src/native/cpu/ops/` provider | CPU float32/64、COO int64、CSR int32/64；稀疏内容检查和固定 shape 输出 | OP1–OP3；P1 完成 |

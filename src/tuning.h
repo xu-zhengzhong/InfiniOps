@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -42,9 +43,13 @@ struct TuningSignature {
 
   template <typename... Args>
   static TuningSignature Build(const Args&... args) {
-    TuningSignature sig;
-    (sig.Absorb(args), ...);
-    return sig;
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      throw std::invalid_argument("sparse tuning signatures are not supported");
+    } else {
+      TuningSignature sig;
+      (sig.Absorb(args), ...);
+      return sig;
+    }
   }
 
   bool operator==(const TuningSignature& other) const {

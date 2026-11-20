@@ -25,6 +25,7 @@
 #include "handle.h"
 #include "host_range_profiler.h"
 #include "runtime.h"
+#include "sparse.h"
 #include "tensor.h"
 #include "tuning.h"
 
@@ -54,7 +55,7 @@ auto ProviderSupports(int, const Args&... args)
 
 template <typename Provider, typename... Args>
 bool ProviderSupports(long, const Args&...) {
-  return true;
+  return !ContainsSparseArgument<Args...>;
 }
 
 template <typename Provider, typename... Args>
@@ -74,6 +75,9 @@ struct CacheKey {
   std::size_t hash;
 
   std::vector<Tensor> tensors;
+  std::vector<SparseMetadataKey> sparse_tensors;
+  // Record container boundaries and argument order for mixed sparse requests.
+  std::vector<std::size_t> argument_structure;
 
   std::size_t scalar_hash;
 
@@ -82,11 +86,53 @@ struct CacheKey {
     CacheKey key;
     key.hash = 0;
     key.scalar_hash = 0;
-    (key.Absorb(args), ...);
+    if constexpr (ContainsSparseArgument<Args...>) {
+      (key.AbsorbSparseAware(args), ...);
+    } else {
+      (key.Absorb(args), ...);
+    }
     return key;
   }
 
  private:
+  void Tag(std::size_t tag) {
+    argument_structure.push_back(tag);
+    HashCombine(hash, tag);
+  }
+
+  void AbsorbSparseAware(const SparseTensor& t) {
+    Tag(1);
+    auto metadata = SparseMetadataKey::Build(t);
+    HashCombine(hash, metadata.Hash());
+    sparse_tensors.push_back(std::move(metadata));
+  }
+
+  void AbsorbSparseAware(const Tensor& t) {
+    Tag(2);
+    // Even dense operands of a sparse request must not retain borrowed data.
+    Absorb(Tensor{nullptr, t.shape(), t.dtype(), t.device(), t.strides()});
+  }
+
+  template <typename T>
+  void AbsorbSparseAware(const std::optional<T>& value) {
+    Tag(3);
+    Tag(value.has_value());
+    if (value) AbsorbSparseAware(*value);
+  }
+
+  template <typename T>
+  void AbsorbSparseAware(const std::vector<T>& values) {
+    Tag(4);
+    Tag(values.size());
+    for (const auto& value : values) AbsorbSparseAware(value);
+  }
+
+  template <typename T>
+  void AbsorbSparseAware(const T& value) {
+    Tag(5);
+    Absorb(value);
+  }
+
   void Absorb(const Tensor& t) {
     HashCombine(hash, t);
     tensors.push_back(t);
@@ -137,20 +183,33 @@ inline void SyncDevice(Device::Type dev_type) {
       "SyncDevice");
 }
 
-inline Device::Type FirstDeviceType() { return Device::Type::kCount; }
-
-template <typename First, typename... Rest>
-Device::Type FirstDeviceType(const First& first, const Rest&... rest) {
-  if constexpr (std::is_same_v<std::decay_t<First>, Tensor>) {
-    return first.device().type();
-  } else if constexpr (std::is_same_v<std::decay_t<First>,
-                                      std::vector<Tensor>>) {
-    return first.empty() ? FirstDeviceType(rest...)
-                         : first.front().device().type();
-  } else {
-    return FirstDeviceType(rest...);
-  }
+template <typename... Args>
+Device::Type FirstDeviceType(const Args&... args) {
+  auto result = Device::Type::kCount;
+  VisitTensorArguments(
+      [&](const auto& tensor) {
+        if (result == Device::Type::kCount) result = tensor.device().type();
+      },
+      args...);
+  return result;
 }
+
+// Checked providers own resource/content validation and synchronous execution.
+// Merely implementing supports() or an unchecked operator() is insufficient.
+template <typename Provider, typename... Args>
+class HasCheckedCall {
+  template <typename P>
+  static auto Test(int)
+      -> std::is_same<ValidationResult, decltype(P::checked_call(
+                                            std::declval<const Handle&>(),
+                                            std::declval<const Config&>(),
+                                            std::declval<const Args&>()...))>;
+  template <typename>
+  static std::false_type Test(long);
+
+ public:
+  static constexpr bool value = decltype(Test<Provider>(0))::value;
+};
 
 template <typename TensorLike, typename = void>
 class IsTensorLike : public std::false_type {};
@@ -166,13 +225,17 @@ class IsTensorLike<
     : public std::true_type {};
 
 template <typename T, typename std::enable_if_t<
-                          IsTensorLike<std::decay_t<T>>::value, int> = 0>
+                          IsTensorLike<std::decay_t<T>>::value &&
+                              !TensorArgumentTraits<std::decay_t<T>>::kSparse,
+                          int> = 0>
 Tensor AsCallArg(const T& tensor) {
   return Tensor{tensor};
 }
 
 template <typename T, typename std::enable_if_t<
-                          !IsTensorLike<std::decay_t<T>>::value, int> = 0>
+                          (!IsTensorLike<std::decay_t<T>>::value ||
+                           TensorArgumentTraits<std::decay_t<T>>::kSparse),
+                          int> = 0>
 const T& AsCallArg(const T& value) {
   return value;
 }
@@ -227,9 +290,11 @@ void TraceOperatorCall(const CacheKey& key, const Config& config) {
   if (!TraceOperatorCallsEnabled()) return;
 
   const auto device =
-      key.tensors.empty()
-          ? std::string_view{"unknown"}
-          : Device::StringFromType(key.tensors.front().device().type());
+      !key.tensors.empty()
+          ? Device::StringFromType(key.tensors.front().device().type())
+      : !key.sparse_tensors.empty()
+          ? Device::StringFromType(key.sparse_tensors.front().device.type())
+          : std::string_view{"unknown"};
   constexpr auto operator_name = OperatorName<Key>();
   std::fprintf(stderr,
                "[INFINI_OPS_TRACE_CALLS] {\"operator_name\": \"%.*s\", "
@@ -286,7 +351,33 @@ void TraceOperatorCallDetailed(const CacheKey& key, const Config& config) {
       }
       line += "]}";
     }
-    line += "]}\n";
+    line += "]";
+    if (!key.sparse_tensors.empty()) {
+      line += ", \"sparse_tensors\": [";
+      for (std::size_t i = 0; i < key.sparse_tensors.size(); ++i) {
+        const auto& t = key.sparse_tensors[i];
+        if (i > 0) line += ", ";
+        line += "{\"layout\": \"";
+        line += t.layout == TensorLayout::kCoo ? "coo" : "csr";
+        line += "\", \"device\": \"" + t.device.ToString();
+        line += "\", \"dtype\": \"";
+        const auto dtype = infini::rt::kDataTypeToDesc.at(t.dtype);
+        line.append(dtype.data(), dtype.size());
+        line += "\", \"index_dtype\": \"";
+        const auto index_dtype = infini::rt::kDataTypeToDesc.at(t.index_dtype);
+        line.append(index_dtype.data(), index_dtype.size());
+        line += "\", \"shape\": [" + std::to_string(t.shape[0]) + "," +
+                std::to_string(t.shape[1]) + "]";
+        line += ", \"nnz\": " + std::to_string(t.nnz);
+        if (t.layout == TensorLayout::kCoo) {
+          line += ", \"coalesced\": ";
+          line += t.coalesced ? "true" : "false";
+        }
+        line += "}";
+      }
+      line += "]";
+    }
+    line += "}\n";
     std::fprintf(stderr, "%s", line.c_str());
   } catch (...) {
     // Ignore allocation and serialization exceptions from tracing.
@@ -307,6 +398,9 @@ struct std::equal_to<infini::ops::detail::CacheKey> {
   bool operator()(const infini::ops::detail::CacheKey& a,
                   const infini::ops::detail::CacheKey& b) const {
     if (a.scalar_hash != b.scalar_hash) return false;
+    if (a.argument_structure != b.argument_structure ||
+        a.sparse_tensors != b.sparse_tensors)
+      return false;
     if (a.tensors.size() != b.tensors.size()) return false;
     std::equal_to<infini::ops::Tensor> eq;
     for (std::size_t i = 0; i < a.tensors.size(); ++i) {
@@ -392,6 +486,9 @@ class Operator : public OperatorBase {
   template <typename... Args>
   static std::unique_ptr<Operator> Make(const Config& config,
                                         const Tensor tensor, Args&&... args) {
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      return MakeSparse(config, tensor, args...);
+    }
     const auto dev_type = tensor.device().type();
     if (!TuningManager::Instance().IsEnabled() ||
         !config.needs_implementation_resolution()) {
@@ -409,14 +506,21 @@ class Operator : public OperatorBase {
 
   template <typename... Args>
   static std::unique_ptr<Operator> Make(const Tensor tensor, Args&&... args) {
-    return Make(ImplicitConfig(tensor.device().type()), tensor,
-                std::as_const(args)...);
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      return MakeSparse(Config{}, tensor, args...);
+    } else {
+      return Make(ImplicitConfig(tensor.device().type()), tensor,
+                  std::as_const(args)...);
+    }
   }
 
   template <typename... Args>
   static std::unique_ptr<Operator> Make(const Config& config,
                                         const std::vector<Tensor> tensors,
                                         Args&&... args) {
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      return MakeSparse(config, tensors, args...);
+    }
     assert(!tensors.empty() && "operator tensor list input cannot be empty");
 
     const auto dev_type = tensors.front().device().type();
@@ -437,10 +541,13 @@ class Operator : public OperatorBase {
   template <typename... Args>
   static std::unique_ptr<Operator> Make(const std::vector<Tensor> tensors,
                                         Args&&... args) {
-    assert(!tensors.empty() && "operator tensor list input cannot be empty");
-
-    return Make(ImplicitConfig(tensors.front().device().type()), tensors,
-                std::as_const(args)...);
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      return MakeSparse(Config{}, tensors, args...);
+    } else {
+      assert(!tensors.empty() && "operator tensor list input cannot be empty");
+      return Make(ImplicitConfig(tensors.front().device().type()), tensors,
+                  std::as_const(args)...);
+    }
   }
 
   // Metadata eligibility only. This never constructs a provider and does not
@@ -451,6 +558,9 @@ class Operator : public OperatorBase {
   template <typename... Args>
   static bool CanMake(const Config& config, const Tensor tensor,
                       const Args&... args) {
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      return CanMakeSparse(config, tensor, args...);
+    }
     return SelectWithDevice(
         config, tensor.device().type(), false,
         [](auto, auto, auto, auto&...) {}, tensor, args...);
@@ -459,111 +569,247 @@ class Operator : public OperatorBase {
   template <typename... Args>
   static bool CanMake(const Config& config, const std::vector<Tensor> tensors,
                       const Args&... args) {
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      return CanMakeSparse(config, tensors, args...);
+    }
     return !tensors.empty() &&
            SelectWithDevice(
                config, tensors.front().device().type(), false,
                [](auto, auto, auto, auto&...) {}, tensors, args...);
   }
 
+  template <typename First, typename... Args,
+            std::enable_if_t<
+                detail::ContainsSparseArgument<First, Args...> &&
+                    (detail::TensorArgumentTraits<First>::kDense ||
+                     detail::TensorArgumentTraits<First>::kSparse) &&
+                    !std::is_same_v<std::decay_t<First>, Tensor> &&
+                    !std::is_same_v<std::decay_t<First>, std::vector<Tensor>>,
+                int> = 0>
+  static std::unique_ptr<Operator> Make(const Config& config,
+                                        const First& first,
+                                        const Args&... args) {
+    return MakeSparse(config, first, args...);
+  }
+
+  template <typename First, typename... Args,
+            std::enable_if_t<
+                detail::ContainsSparseArgument<First, Args...> &&
+                    (detail::TensorArgumentTraits<First>::kDense ||
+                     detail::TensorArgumentTraits<First>::kSparse) &&
+                    !std::is_same_v<std::decay_t<First>, Tensor> &&
+                    !std::is_same_v<std::decay_t<First>, std::vector<Tensor>>,
+                int> = 0>
+  static std::unique_ptr<Operator> Make(const First& first,
+                                        const Args&... args) {
+    return MakeSparse(Config{}, first, args...);
+  }
+
+  template <typename First, typename... Args,
+            std::enable_if_t<
+                detail::ContainsSparseArgument<First, Args...> &&
+                    (detail::TensorArgumentTraits<First>::kDense ||
+                     detail::TensorArgumentTraits<First>::kSparse) &&
+                    !std::is_same_v<std::decay_t<First>, Tensor> &&
+                    !std::is_same_v<std::decay_t<First>, std::vector<Tensor>>,
+                int> = 0>
+  static bool CanMake(const Config& config, const First& first,
+                      const Args&... args) {
+    return CanMakeSparse(config, first, args...);
+  }
+
+  // Metadata/selection is common; each provider must check resources and index
+  // contents before computing. No cached instance, validation proof, structure
+  // analysis or tuning result crosses this boundary. Default config is
+  // automatic.
+  template <typename... Args>
+  static ValidationResult CheckedCall(const Handle& handle,
+                                      const Config& config,
+                                      const Args&... args) noexcept {
+    if constexpr (!detail::ContainsSparseArgument<Args...>) {
+      return {ValidationCode::kInvalidMetadata};
+    } else {
+      try {
+        auto result = detail::ValidateSparseArguments(args...);
+        if (!result.ok()) return result;
+        const bool automatic =
+            config.needs_implementation_resolution() ||
+            config.implementation_index() == Config::kAutomaticImplementation;
+        const auto failure = automatic
+                                 ? ValidationCode::kNoProvider
+                                 : ValidationCode::kUnsupportedImplementation;
+        const auto dev = detail::FirstDeviceType(args...);
+        if (!detail::ListContains(dev, ActiveDevices<Key>{})) return {failure};
+        result = {failure};
+        DispatchFunc<ActiveDevices<Key>>(
+            dev,
+            [&](auto device_tag) {
+              constexpr auto kDev = decltype(device_tag)::value;
+              using Implementations =
+                  typename ActiveImplementations<Key, kDev>::type;
+              bool selected = false;
+              const auto attempt = [&](auto implementation_tag) {
+                constexpr auto index = decltype(implementation_tag)::value;
+                using Provider = Operator<Key, kDev, index>;
+                if constexpr (detail::HasCheckedCall<Provider,
+                                                     Args...>::value) {
+                  bool supported = false;
+                  if constexpr (detail::HasConfigAwareSupports<
+                                    Provider, Args...>::value) {
+                    supported = Provider::supports(config, args...);
+                  } else if (!config.requires_config_aware_provider()) {
+                    supported = detail::ProviderSupports<Provider>(0, args...);
+                  }
+                  if (!supported) return;
+                  selected = true;
+                  auto resolved = config.Clone();
+                  resolved->set_implementation_index(index);
+                  if (detail::TraceOperatorCallsEnabled() ||
+                      detail::TraceOperatorCallsDetailedEnabled()) {
+                    try {
+                      const auto key = detail::CacheKey::Build(index, args...);
+                      detail::TraceOperatorCall<Key>(key, *resolved);
+                      detail::TraceOperatorCallDetailed<Key>(key, *resolved);
+                    } catch (...) {
+                      // Tracing is best effort and cannot change execution.
+                    }
+                  }
+                  result = Provider::checked_call(handle, *resolved, args...);
+                }
+              };
+              if (automatic) {
+                for (const auto index :
+                     detail::ListToVector(Implementations{})) {
+                  detail::DispatchImplementation(index, attempt,
+                                                 "Operator::CheckedCall",
+                                                 Implementations{});
+                  if (selected) break;
+                }
+              } else if (detail::ListContains(config.implementation_index(),
+                                              Implementations{})) {
+                detail::DispatchImplementation(config.implementation_index(),
+                                               attempt, "Operator::CheckedCall",
+                                               Implementations{});
+              }
+            },
+            "Operator::CheckedCall");
+        return result;
+      } catch (const std::bad_alloc&) {
+        return {ValidationCode::kAllocationFailure};
+      } catch (...) {
+        return {ValidationCode::kExecutionFailure};
+      }
+    }
+  }
+
   template <typename... Args>
   static void Call(const Handle& handle, const Config& config,
                    const Args&... args) {
-    [[maybe_unused]] HostRangeScope host_range_operator_call{
-        HostRangeLayer::kOperatorCall};
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      throw std::invalid_argument("sparse execution requires CheckedCall");
+    } else {
+      [[maybe_unused]] HostRangeScope host_range_operator_call{
+          HostRangeLayer::kOperatorCall};
 
-    static thread_local std::unordered_map<detail::CacheKey,
-                                           std::unique_ptr<Operator>>
-        cache;
-    static thread_local std::size_t generation{0};
+      static thread_local std::unordered_map<detail::CacheKey,
+                                             std::unique_ptr<Operator>>
+          cache;
+      static thread_local std::size_t generation{0};
 
-    const auto cache_generation =
-        cache_generation_.load(std::memory_order_relaxed);
-    if (generation != cache_generation) {
-      cache.clear();
-      generation = cache_generation;
-    }
+      const auto cache_generation =
+          cache_generation_.load(std::memory_order_relaxed);
+      if (generation != cache_generation) {
+        cache.clear();
+        generation = cache_generation;
+      }
 
-    std::unique_ptr<Config> resolved_config;
-    const Config* effective_config = &config;
-    if (TuningManager::Instance().IsEnabled() &&
-        config.needs_implementation_resolution()) {
-      const auto dev_type = detail::FirstDeviceType(args...);
-      assert(dev_type != Device::Type::kCount &&
-             "operator call requires at least one tensor argument");
+      std::unique_ptr<Config> resolved_config;
+      const Config* effective_config = &config;
+      if (TuningManager::Instance().IsEnabled() &&
+          config.needs_implementation_resolution()) {
+        const auto dev_type = detail::FirstDeviceType(args...);
+        assert(dev_type != Device::Type::kCount &&
+               "operator call requires at least one tensor argument");
 
-      const auto resolved_implementation_index =
-          detail::ResolveImplementationIndexOnline<Key>(handle, config,
-                                                        dev_type, args...);
-      resolved_config = config.Clone();
-      resolved_config->set_implementation_index(resolved_implementation_index);
-      effective_config = resolved_config.get();
-    }
+        const auto resolved_implementation_index =
+            detail::ResolveImplementationIndexOnline<Key>(handle, config,
+                                                          dev_type, args...);
+        resolved_config = config.Clone();
+        resolved_config->set_implementation_index(
+            resolved_implementation_index);
+        effective_config = resolved_config.get();
+      }
 
 #if defined(INFINI_OPS_ENABLE_HOST_RANGE_PROFILING)
-    auto key = [&]() {
-      HostRangeScope host_range_cache_key{HostRangeLayer::kCacheKey};
-      return CacheKeyBuilder<Key>{}(*effective_config, args...);
-    }();
-    detail::TraceOperatorCall<Key>(key, *effective_config);
-    detail::TraceOperatorCallDetailed<Key>(key, *effective_config);
+      auto key = [&]() {
+        HostRangeScope host_range_cache_key{HostRangeLayer::kCacheKey};
+        return CacheKeyBuilder<Key>{}(*effective_config, args...);
+      }();
+      detail::TraceOperatorCall<Key>(key, *effective_config);
+      detail::TraceOperatorCallDetailed<Key>(key, *effective_config);
 
-    auto it = [&]() {
-      HostRangeScope host_range_cache_lookup{HostRangeLayer::kCacheLookup};
-      return cache.find(key);
-    }();
+      auto it = [&]() {
+        HostRangeScope host_range_cache_lookup{HostRangeLayer::kCacheLookup};
+        return cache.find(key);
+      }();
 
-    if (it == cache.end()) {
-      HostRangeScope host_range_cache_construct{
-          HostRangeLayer::kCacheConstruct};
-      auto new_op = Make(*effective_config, args...);
-      it = cache.emplace(std::move(key), std::move(new_op)).first;
-    }
+      if (it == cache.end()) {
+        HostRangeScope host_range_cache_construct{
+            HostRangeLayer::kCacheConstruct};
+        auto new_op = Make(*effective_config, args...);
+        it = cache.emplace(std::move(key), std::move(new_op)).first;
+      }
 #else
-    auto key = CacheKeyBuilder<Key>{}(*effective_config, args...);
-    detail::TraceOperatorCall<Key>(key, *effective_config);
-    detail::TraceOperatorCallDetailed<Key>(key, *effective_config);
+      auto key = CacheKeyBuilder<Key>{}(*effective_config, args...);
+      detail::TraceOperatorCall<Key>(key, *effective_config);
+      detail::TraceOperatorCallDetailed<Key>(key, *effective_config);
 
-    auto it{cache.find(key)};
+      auto it{cache.find(key)};
 
-    if (it == cache.end()) {
-      it =
-          cache.emplace(std::move(key), Make(*effective_config, args...)).first;
-    }
+      if (it == cache.end()) {
+        it = cache.emplace(std::move(key), Make(*effective_config, args...))
+                 .first;
+      }
 #endif
 
-    auto& op{it->second};
+      auto& op{it->second};
 
-    [[maybe_unused]] HostRangeScope host_range_operator_invoke{
-        HostRangeLayer::kOperatorInvoke};
-    const auto required_workspace = op->workspace_size_in_bytes();
-    if (required_workspace == 0) {
-      return (*op)(handle, args...);
+      [[maybe_unused]] HostRangeScope host_range_operator_invoke{
+          HostRangeLayer::kOperatorInvoke};
+      const auto required_workspace = op->workspace_size_in_bytes();
+      if (required_workspace == 0) {
+        return (*op)(handle, args...);
+      }
+      // An explicit workspace takes precedence. Providers validate their own
+      // workspace requirements before accessing it.
+      if (handle.workspace() != nullptr ||
+          handle.workspace_size_in_bytes() != 0) {
+        return (*op)(handle, args...);
+      }
+      auto lease = handle.acquire_workspace(required_workspace);
+      if (!lease.data) {
+        return (*op)(handle, args...);
+      }
+      if (lease.size_in_bytes < required_workspace) {
+        throw std::invalid_argument(
+            "operator workspace lease is missing or too small");
+      }
+      auto invocation_handle = handle.Clone();
+      invocation_handle->set_workspace(lease.data.get());
+      invocation_handle->set_workspace_size_in_bytes(lease.size_in_bytes);
+      // Keep the lease alive through submission. Its owner implements the
+      // stream-aware deferred release needed after an asynchronous kernel.
+      return (*op)(*invocation_handle, args...);
     }
-    // An explicit workspace takes precedence. Providers validate their own
-    // workspace requirements before accessing it.
-    if (handle.workspace() != nullptr ||
-        handle.workspace_size_in_bytes() != 0) {
-      return (*op)(handle, args...);
-    }
-    auto lease = handle.acquire_workspace(required_workspace);
-    if (!lease.data) {
-      return (*op)(handle, args...);
-    }
-    if (lease.size_in_bytes < required_workspace) {
-      throw std::invalid_argument(
-          "operator workspace lease is missing or too small");
-    }
-    auto invocation_handle = handle.Clone();
-    invocation_handle->set_workspace(lease.data.get());
-    invocation_handle->set_workspace_size_in_bytes(lease.size_in_bytes);
-    // Keep the lease alive through submission. Its owner implements the
-    // stream-aware deferred release needed after an asynchronous kernel.
-    return (*op)(*invocation_handle, args...);
   }
 
   template <typename... Args>
   static void Call(const Tensor tensor, const Args&... args) {
-    return Call({}, ImplicitConfig(tensor.device().type()), tensor, args...);
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      throw std::invalid_argument("sparse execution requires CheckedCall");
+    } else {
+      return Call({}, ImplicitConfig(tensor.device().type()), tensor, args...);
+    }
   }
 
   template <
@@ -604,17 +850,25 @@ class Operator : public OperatorBase {
 
   template <typename... Args>
   void operator()(const Handle& handle, const Args&... args) {
-    set_handle(handle);
-    set_stream(handle.stream());
-    set_workspace(handle.workspace());
-    set_workspace_size_in_bytes(handle.workspace_size_in_bytes());
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      throw std::invalid_argument("sparse execution requires CheckedCall");
+    } else {
+      set_handle(handle);
+      set_stream(handle.stream());
+      set_workspace(handle.workspace());
+      set_workspace_size_in_bytes(handle.workspace_size_in_bytes());
 
-    return operator()(args...);
+      return operator()(args...);
+    }
   }
 
   template <typename... Args>
   void operator()(const Args&... args) const {
-    return (*static_cast<const Key*>(this))(args...);
+    if constexpr (detail::ContainsSparseArgument<Args...>) {
+      throw std::invalid_argument("sparse execution requires CheckedCall");
+    } else {
+      return (*static_cast<const Key*>(this))(args...);
+    }
   }
 
  protected:
@@ -623,6 +877,32 @@ class Operator : public OperatorBase {
   static constexpr std::size_t implementation_index_{implementation_index};
 
  private:
+  template <typename... Args>
+  static std::unique_ptr<Operator> MakeSparse(const Config& config,
+                                              const Args&... args) {
+    const auto status = detail::ValidateSparseArguments(args...);
+    if (!status.ok()) {
+      throw std::invalid_argument("invalid or unsupported sparse metadata");
+    }
+    auto resolved = config.Clone();
+    if (config.needs_implementation_resolution()) {
+      resolved->set_implementation_index(Config::kAutomaticImplementation);
+    }
+    return MakeWithDevice(*resolved, detail::FirstDeviceType(args...), args...);
+  }
+
+  template <typename... Args>
+  static bool CanMakeSparse(const Config& config, const Args&... args) {
+    if (!detail::ValidateSparseArguments(args...).ok()) return false;
+    auto resolved = config.Clone();
+    if (config.needs_implementation_resolution()) {
+      resolved->set_implementation_index(Config::kAutomaticImplementation);
+    }
+    return SelectWithDevice(
+        *resolved, detail::FirstDeviceType(args...), false,
+        [](auto, auto, auto, auto&...) {}, args...);
+  }
+
   template <auto first, auto... rest>
   static constexpr std::size_t FirstActiveImplementationIndex(
       List<first, rest...>) {
@@ -827,64 +1107,74 @@ template <typename Key, typename... Args>
 std::size_t ResolveImplementationIndex(const Config& config,
                                        Device::Type dev_type,
                                        const Args&... args) {
-  if (!config.needs_implementation_resolution()) {
-    return config.implementation_index();
-  }
-
-  auto indices = Operator<Key>::active_implementation_indices(dev_type);
-  if (indices.empty()) return config.implementation_index();
-
-  auto signature = TuningSignature::Build(args...);
-  constexpr auto op_name = OperatorName<Key>();
-  auto tuned_index =
-      TuningManager::Instance().Lookup(op_name, dev_type, signature);
-  auto chosen = indices.front();
-
-  if (tuned_index.has_value()) {
-    bool is_valid = std::find(indices.begin(), indices.end(), *tuned_index) !=
-                    indices.end();
-    if (is_valid) {
-      chosen = *tuned_index;
-    } else {
-      std::cerr << "[Tuning] Warning: tuned implementation " << *tuned_index
-                << " for " << op_name << " on "
-                << Device::StringFromType(dev_type)
-                << " is not available (compiled indices:";
-      for (auto idx : indices) std::cerr << " " << idx;
-      std::cerr << "), falling back to " << chosen << std::endl;
+  if constexpr (ContainsSparseArgument<Args...>) {
+    return config.needs_implementation_resolution()
+               ? Config::kAutomaticImplementation
+               : config.implementation_index();
+  } else {
+    if (!config.needs_implementation_resolution()) {
+      return config.implementation_index();
     }
-  }
 
-  return chosen;
+    auto indices = Operator<Key>::active_implementation_indices(dev_type);
+    if (indices.empty()) return config.implementation_index();
+
+    auto signature = TuningSignature::Build(args...);
+    constexpr auto op_name = OperatorName<Key>();
+    auto tuned_index =
+        TuningManager::Instance().Lookup(op_name, dev_type, signature);
+    auto chosen = indices.front();
+
+    if (tuned_index.has_value()) {
+      bool is_valid = std::find(indices.begin(), indices.end(), *tuned_index) !=
+                      indices.end();
+      if (is_valid) {
+        chosen = *tuned_index;
+      } else {
+        std::cerr << "[Tuning] Warning: tuned implementation " << *tuned_index
+                  << " for " << op_name << " on "
+                  << Device::StringFromType(dev_type)
+                  << " is not available (compiled indices:";
+        for (auto idx : indices) std::cerr << " " << idx;
+        std::cerr << "), falling back to " << chosen << std::endl;
+      }
+    }
+
+    return chosen;
+  }
 }
 
 template <typename Key, typename... Args>
 double BenchmarkImplementation(const Handle& handle, Device::Type dev_type,
                                std::size_t impl_index, const Args&... args) {
-  Config fixed;
-  fixed.set_implementation_index(impl_index);
+  if constexpr (ContainsSparseArgument<Args...>) {
+    throw std::invalid_argument("sparse online tuning is disabled");
+  } else {
+    Config fixed;
+    fixed.set_implementation_index(impl_index);
 
-  auto op = Operator<Key>::Make(fixed, args...);
+    auto op = Operator<Key>::Make(fixed, args...);
 
-  const auto& tuning = TuningManager::Instance();
-  const int warmup = tuning.warmup_count();
-  const int repeat = tuning.repeat_count();
+    const auto& tuning = TuningManager::Instance();
+    const int warmup = tuning.warmup_count();
+    const int repeat = tuning.repeat_count();
 
-  for (int i = 0; i < warmup; ++i) {
-    (*op)(handle, args...);
-  }
-  SyncDevice(dev_type);
-
-  double best = std::numeric_limits<double>::infinity();
-  for (int i = 0; i < repeat; ++i) {
-    auto start = std::chrono::steady_clock::now();
-    (*op)(handle, args...);
+    for (int i = 0; i < warmup; ++i) {
+      (*op)(handle, args...);
+    }
     SyncDevice(dev_type);
-    auto end = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(end - start).count();
-    best = std::min(best, elapsed);
+
+    double best = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < repeat; ++i) {
+      auto start = std::chrono::steady_clock::now();
+      (*op)(handle, args...);
+      SyncDevice(dev_type);
+      auto end = std::chrono::steady_clock::now();
+      double elapsed = std::chrono::duration<double>(end - start).count();
+      best = std::min(best, elapsed);
+    }
+    return best;
   }
-  return best;
 }
 
 template <typename Key, typename... Args>
@@ -892,51 +1182,57 @@ std::size_t ResolveImplementationIndexOnline(const Handle& handle,
                                              const Config& config,
                                              Device::Type dev_type,
                                              const Args&... args) {
-  if (!config.needs_implementation_resolution()) {
-    return config.implementation_index();
-  }
-
-  auto& tuning = TuningManager::Instance();
-  if (!tuning.IsEnabled()) {
-    return ResolveImplementationIndex<Key>(config, dev_type, args...);
-  }
-
-  auto indices = Operator<Key>::active_implementation_indices(dev_type);
-  if (indices.empty()) return config.implementation_index();
-
-  auto signature = TuningSignature::Build(args...);
-  constexpr auto op_name = OperatorName<Key>();
-  auto tuned = tuning.Lookup(op_name, dev_type, signature);
-  std::size_t chosen;
-
-  if (tuned.has_value() &&
-      std::find(indices.begin(), indices.end(), *tuned) != indices.end()) {
-    chosen = *tuned;
-  } else if (indices.size() == 1) {
-    chosen = indices.front();
-    tuning.Record(op_name, dev_type, signature, chosen);
-    std::cout << "[Tuning] " << op_name << " on "
-              << Device::StringFromType(dev_type)
-              << ": single impl, chose index " << chosen << std::endl;
+  if constexpr (ContainsSparseArgument<Args...>) {
+    return config.needs_implementation_resolution()
+               ? Config::kAutomaticImplementation
+               : config.implementation_index();
   } else {
-    chosen = indices.front();
-    double best_time = std::numeric_limits<double>::infinity();
-    for (auto idx : indices) {
-      double time =
-          BenchmarkImplementation<Key>(handle, dev_type, idx, args...);
-      if (time < best_time) {
-        best_time = time;
-        chosen = idx;
-      }
+    if (!config.needs_implementation_resolution()) {
+      return config.implementation_index();
     }
-    tuning.Record(op_name, dev_type, signature, chosen);
-    std::cout << "[Tuning] " << op_name << " on "
-              << Device::StringFromType(dev_type) << ": benchmarked "
-              << indices.size() << " impls, chose index " << chosen << " ("
-              << best_time * 1e6 << " us)" << std::endl;
-  }
 
-  return chosen;
+    auto& tuning = TuningManager::Instance();
+    if (!tuning.IsEnabled()) {
+      return ResolveImplementationIndex<Key>(config, dev_type, args...);
+    }
+
+    auto indices = Operator<Key>::active_implementation_indices(dev_type);
+    if (indices.empty()) return config.implementation_index();
+
+    auto signature = TuningSignature::Build(args...);
+    constexpr auto op_name = OperatorName<Key>();
+    auto tuned = tuning.Lookup(op_name, dev_type, signature);
+    std::size_t chosen;
+
+    if (tuned.has_value() &&
+        std::find(indices.begin(), indices.end(), *tuned) != indices.end()) {
+      chosen = *tuned;
+    } else if (indices.size() == 1) {
+      chosen = indices.front();
+      tuning.Record(op_name, dev_type, signature, chosen);
+      std::cout << "[Tuning] " << op_name << " on "
+                << Device::StringFromType(dev_type)
+                << ": single impl, chose index " << chosen << std::endl;
+    } else {
+      chosen = indices.front();
+      double best_time = std::numeric_limits<double>::infinity();
+      for (auto idx : indices) {
+        double time =
+            BenchmarkImplementation<Key>(handle, dev_type, idx, args...);
+        if (time < best_time) {
+          best_time = time;
+          chosen = idx;
+        }
+      }
+      tuning.Record(op_name, dev_type, signature, chosen);
+      std::cout << "[Tuning] " << op_name << " on "
+                << Device::StringFromType(dev_type) << ": benchmarked "
+                << indices.size() << " impls, chose index " << chosen << " ("
+                << best_time * 1e6 << " us)" << std::endl;
+    }
+
+    return chosen;
+  }
 }
 
 }  // namespace detail

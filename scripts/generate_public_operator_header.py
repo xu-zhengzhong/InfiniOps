@@ -21,6 +21,37 @@ _CALL_SIGNATURE_RE = re.compile(
 # even when that TU sees an `extern template` declaration.
 _PROVIDER_SIGNATURES = (
     (
+        "Operator::CheckedCall",
+        re.compile(
+            r"(?P<indent>^[ \t]*)template\s*<typename\.\.\.\s+Args>\s*\n"
+            r"(?P=indent)static\s+ValidationResult\s+CheckedCall\s*\(\s*"
+            r"const\s+Handle\s*&\s*handle\s*,\s*"
+            r"const\s+Config\s*&\s*config\s*,\s*"
+            r"const\s+Args\s*&\s*\.\.\.\s*args\s*\)\s*noexcept\s*",
+            re.MULTILINE,
+        ),
+    ),
+    (
+        "Operator::MakeSparse",
+        re.compile(
+            r"(?P<indent>^[ \t]*)template\s*<typename\.\.\.\s+Args>\s*\n"
+            r"(?P=indent)static\s+std::unique_ptr<Operator>\s+MakeSparse\s*\(\s*"
+            r"const\s+Config\s*&\s*config\s*,\s*"
+            r"const\s+Args\s*&\s*\.\.\.\s*args\s*\)\s*",
+            re.MULTILINE,
+        ),
+    ),
+    (
+        "Operator::CanMakeSparse",
+        re.compile(
+            r"(?P<indent>^[ \t]*)template\s*<typename\.\.\.\s+Args>\s*\n"
+            r"(?P=indent)static\s+bool\s+CanMakeSparse\s*\(\s*"
+            r"const\s+Config\s*&\s*config\s*,\s*"
+            r"const\s+Args\s*&\s*\.\.\.\s*args\s*\)\s*",
+            re.MULTILINE,
+        ),
+    ),
+    (
         "Operator::CanMake(vector<Tensor>)",
         re.compile(
             r"(?P<indent>^[ \t]*)template\s*<typename\.\.\.\s+Args>\s*\n"
