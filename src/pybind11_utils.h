@@ -29,6 +29,7 @@ inline py::handle InternedName(const char* value) {
 }
 
 struct InternedNames {
+  py::handle layout{InternedName("layout")};
   py::handle data_ptr{InternedName("data_ptr")};
   py::handle shape{InternedName("shape")};
   py::handle dtype{InternedName("dtype")};
@@ -243,7 +244,29 @@ inline Device DeviceFromPybind11HandleImpl(py::handle obj) {
   return Device{DeviceTypeFromString(device_type_str), device_index};
 }
 
-inline Tensor TensorFromPybind11HandleImpl(py::handle obj) {
+enum class PythonLayout { kUnspecified, kStrided, kCoo, kCsr };
+
+inline PythonLayout GetPythonLayout(py::handle obj) {
+  auto layout = py::reinterpret_steal<py::object>(
+      PyObject_GetAttr(obj.ptr(), GetInternedNames().layout.ptr()));
+  // Older dense tensor-like objects implement only the data/stride protocol.
+  if (!layout) {
+    if (!PyErr_ExceptionMatches(PyExc_AttributeError))
+      throw py::error_already_set();
+    PyErr_Clear();
+    return PythonLayout::kUnspecified;
+  }
+  const auto name = py::str(layout).cast<std::string>();
+  if (name == "torch.strided") return PythonLayout::kStrided;
+  if (name == "torch.sparse_coo") return PythonLayout::kCoo;
+  if (name == "torch.sparse_csr") return PythonLayout::kCsr;
+  PyErr_Format(PyExc_NotImplementedError, "UnsupportedLayout (%s).",
+               name.c_str());
+  throw py::error_already_set();
+}
+
+inline Tensor StridedTensorFromPybind11Handle(py::handle obj, DataType dtype,
+                                              Device device) {
   const auto& names{GetInternedNames()};
   auto data{reinterpret_cast<void*>(
       detail::CallMethodNoArgs(obj, names.data_ptr).cast<std::uintptr_t>())};
@@ -251,14 +274,24 @@ inline Tensor TensorFromPybind11HandleImpl(py::handle obj) {
   auto shape{detail::VectorFromPybind11Handle<typename Tensor::Shape>(
       py::getattr(obj, names.shape))};
 
-  auto dtype{DataTypeFromPybind11HandleImpl(py::getattr(obj, names.dtype))};
-
-  auto device{DeviceFromPybind11HandleImpl(obj)};
-
   auto strides{detail::VectorFromPybind11Handle<typename Tensor::Strides>(
       detail::CallMethodNoArgs(obj, names.stride))};
 
   return Tensor{data, std::move(shape), dtype, device, std::move(strides)};
+}
+
+inline Tensor TensorFromPybind11HandleImpl(py::handle obj) {
+  const auto layout = GetPythonLayout(obj);
+  if (layout == PythonLayout::kCoo || layout == PythonLayout::kCsr) {
+    PyErr_SetString(PyExc_NotImplementedError,
+                    "UnsupportedLayout (expected a strided tensor).");
+    throw py::error_already_set();
+  }
+  return StridedTensorFromPybind11Handle(
+      obj,
+      DataTypeFromPybind11HandleImpl(
+          py::getattr(obj, GetInternedNames().dtype)),
+      DeviceFromPybind11HandleImpl(obj));
 }
 
 }  // namespace detail
@@ -313,24 +346,29 @@ VectorOptionalTensorFromPybind11Handle(const std::vector<py::object>& objs) {
 
 // Preserve the nesting of optional/list signatures without flattening a list
 // or turning an absent list into an empty one.
-template <typename T, typename PyArg>
-T NestedTensorFromPybind11Handle(const PyArg& arg) {
-  if constexpr (std::is_same_v<T, Tensor>) {
-    return TensorFromPybind11Handle(arg);
+template <typename T, typename PyArg, typename Convert>
+T ConvertNestedTensor(const PyArg& arg, const Convert& convert) {
+  if constexpr (std::is_same_v<T, Tensor> || std::is_same_v<T, SparseTensor>) {
+    return convert(arg);
   } else {
     using Element = typename T::value_type;
     if constexpr (std::is_same_v<T, std::optional<Element>>) {
       if (!arg.has_value()) return std::nullopt;
-      return NestedTensorFromPybind11Handle<Element>(*arg);
+      return ConvertNestedTensor<Element>(*arg, convert);
     } else {
       T result;
       result.reserve(arg.size());
       for (const auto& item : arg) {
-        result.push_back(NestedTensorFromPybind11Handle<Element>(item));
+        result.push_back(ConvertNestedTensor<Element>(item, convert));
       }
       return result;
     }
   }
+}
+
+template <typename T, typename PyArg>
+T NestedTensorFromPybind11Handle(const PyArg& arg) {
+  return ConvertNestedTensor<T>(arg, TensorFromPybind11Handle);
 }
 
 }  // namespace infini::ops

@@ -522,12 +522,12 @@ def _is_data_type_spelling(spelling):
 
 
 def _generate_pybind11(operator):
-    # Sparse Python imports require the layout/owner bridge. Only register
-    # overloads for which a converter exists.
+    # Stateful invocation uses Make/Invoke. Sparse execution uses the
+    # synchronous CheckedCall entry point exposed by the module functions.
     dense_constructors = [
         n for n in operator.constructors if not _has_sparse_parameter(n)
     ]
-    dense_calls = [n for n in operator.calls if not _has_sparse_parameter(n)]
+    layout_aware = any(_has_sparse_parameter(n) for n in operator.calls)
 
     dense_converters = {
         "Tensor": ("py::object", "TensorFromPybind11Handle"),
@@ -545,7 +545,7 @@ def _generate_pybind11(operator):
         ),
     }
 
-    def _generate_params(node):
+    def _generate_params(node, *, typed_layouts=False):
         parts = []
 
         for arg in node.get_arguments():
@@ -555,7 +555,14 @@ def _generate_pybind11(operator):
             kind = _argument_type(arg.type.spelling)
 
             if kind.is_tensor:
-                if kind.cpp in dense_converters:
+                if typed_layouts:
+                    leaf = (
+                        "PySparseTensor"
+                        if kind.leaf == "SparseTensor"
+                        else "PyDenseTensor"
+                    )
+                    param = kind.wrap(leaf)
+                elif kind.cpp in dense_converters:
                     param = dense_converters[kind.cpp][0]
                 else:
                     param = kind.wrap("py::object")
@@ -574,7 +581,11 @@ def _generate_pybind11(operator):
         return ", ".join(parts)
 
     def _generate_arguments(
-        node, preconverted_tensor_arg=None, preconverted_tensor_name=None
+        node,
+        preconverted_tensor_arg=None,
+        preconverted_tensor_name=None,
+        *,
+        typed_layouts=False,
     ):
         args = []
 
@@ -588,7 +599,7 @@ def _generate_pybind11(operator):
             ):
                 args.append(preconverted_tensor_name)
             elif _argument_type(arg.type.spelling).is_tensor:
-                args.append(_tensor_conversion_expr(arg))
+                args.append(_tensor_conversion_expr(arg, typed_layouts=typed_layouts))
             elif _is_data_type_spelling(arg.type.spelling):
                 args.append(f"DataTypeFromPybind11Handle({arg.spelling})")
             else:
@@ -619,10 +630,10 @@ def _generate_pybind11(operator):
             name += "_"
         return name
 
-    def _tensor_conversion_expr(arg):
+    def _tensor_conversion_expr(arg, *, typed_layouts=False):
         cpp = _argument_type(arg.type.spelling).cpp
 
-        if cpp in dense_converters:
+        if cpp in dense_converters and (not typed_layouts or cpp == "Tensor"):
             converter = dense_converters[cpp][1]
         else:
             converter = f"NestedTensorFromPybind11Handle<{cpp}>"
@@ -670,18 +681,58 @@ def _generate_pybind11(operator):
             if arg.spelling == "stream":
                 continue
 
-            if _argument_type(arg.type.spelling).containers[:1] == ("std::optional",):
-                parts.append(f'py::arg("{arg.spelling}") = py::none()')
+            kind = _argument_type(arg.type.spelling)
+            binding = f'py::arg("{arg.spelling}")'
+            if kind.leaf == "SparseTensor" and "std::vector" in kind.containers:
+                # A failed overload can exhaust an iterator before the next
+                # STL caster sees it. Match sparse lists as repeatable sequences.
+                binding += ".noconvert()"
+
+            if kind.containers[:1] == ("std::optional",):
+                binding += " = py::none()"
             elif getattr(arg, "scalar_default", None) is not None:
-                parts.append(f'py::arg("{arg.spelling}") = {arg.scalar_default}')
-            else:
-                parts.append(f'py::arg("{arg.spelling}")')
+                binding += f" = {arg.scalar_default}"
+            parts.append(binding)
 
         return ", ".join(parts)
 
+    def _generate_checked_call(call):
+        importer = _unique_local_name(call, "sparse_call")
+        arguments = []
+
+        for arg in call.get_arguments():
+            if arg.spelling == "stream":
+                continue
+
+            kind = _argument_type(arg.type.spelling)
+            position = len(arguments)
+            expr = arg.spelling
+            if kind.is_tensor:
+                # Fixed-pattern sparse out buffers can have uninitialized indices.
+                out_only = (
+                    ", /*out_only=*/true"
+                    if kind.leaf == "SparseTensor" and expr == "out"
+                    else ""
+                )
+                expr = f"{importer}.Import<{kind.cpp}>({expr}, {position}{out_only})"
+            elif _is_data_type_spelling(arg.type.spelling):
+                expr = f"PythonSparseCall::AttributeType({expr}, {position})"
+            arguments.append(expr)
+
+        return f"""  m.def("{op_name}", []({_generate_params(call, typed_layouts=True)}, std::uintptr_t stream, std::optional<std::size_t> implementation_index) {{
+    [[maybe_unused]] HostRangeScope host_range_binding_body{{HostRangeLayer::kBindingBody}};
+    Handle handle;
+    handle.set_stream(reinterpret_cast<void*>(stream));
+    Config config;
+    if (implementation_index) config.set_implementation_index(*implementation_index);
+    PythonSparseCall {importer};
+    CheckSparseResult(generated_dispatch::CheckedCall{symbol_name}(handle, config, {", ".join(arguments)}));
+  }}, {_generate_py_args(call)}, py::kw_only(), py::arg("stream") = 0, py::arg("implementation_index") = py::none());"""
+
     def _generate_call(op_name, call, method=True, supports_triton_config=False):
-        call_params = _generate_params(call)
-        call_args = _generate_arguments(call)
+        typed_layouts = layout_aware and not method
+        call_params = _generate_params(call, typed_layouts=typed_layouts)
+        call_args = _generate_arguments(call, typed_layouts=typed_layouts)
 
         if not method:
             first_tensor_arg = _first_tensor_arg(call)
@@ -693,10 +744,13 @@ def _generate_pybind11(operator):
                 )
                 first_tensor_conversion = (
                     f"    auto {converted_first_tensor_name}"
-                    f"{{{_tensor_conversion_expr(first_tensor_arg)}}};\n"
+                    f"{{{_tensor_conversion_expr(first_tensor_arg, typed_layouts=typed_layouts)}}};\n"
                 )
                 call_args = _generate_arguments(
-                    call, first_tensor_arg, converted_first_tensor_name
+                    call,
+                    first_tensor_arg,
+                    converted_first_tensor_name,
+                    typed_layouts=typed_layouts,
                 )
             extra_params = ""
             extra_config_init = ""
@@ -793,13 +847,19 @@ def _generate_pybind11(operator):
             if _argument_type(arg.type.spelling).is_tensor:
                 object_like += 1
 
-        return (object_like, -total)
+        # None and empty collections carry no layout. Keep a matching
+        # pre-existing dense overload first when specificity is otherwise equal.
+        return (object_like, -total, _has_sparse_parameter(node))
 
     constructors = sorted(dense_constructors, key=_overload_order_key)
-    operator_calls = sorted(dense_calls, key=_overload_order_key)
+    operator_calls = sorted(operator.calls, key=_overload_order_key)
 
     inits = "\n".join(_generate_init(constructor) for constructor in constructors)
-    calls = "\n".join(_generate_call(operator.name, call) for call in operator_calls)
+    calls = "\n".join(
+        _generate_call(operator.name, call)
+        for call in operator_calls
+        if not _has_sparse_parameter(call)
+    )
 
     supports_triton = operator.has_backend("triton")
     constructor_signatures = {
@@ -810,7 +870,9 @@ def _generate_pybind11(operator):
         for call in operator_calls
     ]
     callers = "\n".join(
-        _generate_call(
+        _generate_checked_call(call)
+        if _has_sparse_parameter(call)
+        else _generate_call(
             operator.name,
             call,
             method=False,
@@ -821,6 +883,7 @@ def _generate_pybind11(operator):
     triton_config_include = (
         '\n#include "triton/jit/pybind11_config.h"' if any(configurable_calls) else ""
     )
+    sparse_include = '\n#include "python/sparse_import.h"' if layout_aware else ""
 
     return f"""#ifndef INFINI_OPS_BINDINGS_{op_name.upper()}_H_
 #define INFINI_OPS_BINDINGS_{op_name.upper()}_H_
@@ -835,7 +898,7 @@ def _generate_pybind11(operator):
 #include "handle.h"
 #include "host_range_profiler.h"
 #include "pybind11_utils.h"
-#include "tuning.h"{triton_config_include}
+#include "tuning.h"{triton_config_include}{sparse_include}
 
 namespace py = pybind11;
 

@@ -33,8 +33,7 @@ def test_cpp_operator_call_instantiation_smoke(tmp_path):
     _run([str(build_dir / "add_smoke")])
 
 
-def test_installed_sparse_codegen_consumer(tmp_path):
-    prefixes = _install_prefixes()
+def _build_sparse_codegen_probe(tmp_path, prefixes):
     root = Path(__file__).resolve().parents[1]
     fixture = root / "tests/cpp/sparse_codegen"
     base = tmp_path / "src/base"
@@ -74,12 +73,14 @@ def test_installed_sparse_codegen_consumer(tmp_path):
             "-fPIC",
             "-shared",
             "-Wl,-z,defs",
+            "-DNDEBUG",
+            "-O2",
             "-DWITH_CPU=1",
             f"-I{root / 'src'}",
             f"-I{base.parent}",
             f"-I{generated / 'include'}",
-            f"-I{root}",
             f"-I{tmp_path}",
+            f"-I{root}",
             f"-I{generated / 'bindings'}",
             *includes,
             str(generated / "src/operator_call_instantiations_0.cc"),
@@ -89,6 +90,19 @@ def test_installed_sparse_codegen_consumer(tmp_path):
             str(tmp_path / "libprobe.so"),
         ]
     )
+    return (
+        compiler,
+        includes,
+        [f"-L{tmp_path}", "-lprobe", f"-Wl,-rpath,{tmp_path}", *libraries],
+    )
+
+
+def test_installed_sparse_codegen_consumer(tmp_path):
+    prefixes = _install_prefixes()
+    compiler, includes, libraries = _build_sparse_codegen_probe(tmp_path, prefixes)
+    fixture = Path(__file__).resolve().parent / "cpp/sparse_codegen"
+    base = tmp_path / "src/base"
+    generated = tmp_path / "generated"
 
     # Overlay only the two operator-specific installed headers. The consumer
     # sees the real installed umbrella/core headers and no provider definitions.
@@ -105,9 +119,6 @@ def test_installed_sparse_codegen_consumer(tmp_path):
                 f"-I{include}",
                 *includes,
                 str(fixture / "consumer.cc"),
-                f"-L{tmp_path}",
-                "-lprobe",
-                f"-Wl,-rpath,{tmp_path}",
                 *libraries,
                 "-o",
                 str(binary),

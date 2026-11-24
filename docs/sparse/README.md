@@ -1,6 +1,6 @@
 # InfiniOps / InfiniRT 稀疏张量支持：分析与执行方案
 
-状态：**D0 / P0 契约已冻结，RT1–RT3 与 OP1–OP2 已完成**。InfiniRT 已通过 `<infini/rt.h>` 提供独立 COO/CSR 描述符和 metadata-only 工厂，正式元数据测试及安装消费者已纳入 CTest；InfiniOps 已接入参数 traits、metadata-only 能力检查、无数据指针的缓存键及 checked 分派入口，稀疏 tuning 保持禁用。生成器已保留 sparse 重载及容器类型，C++ 安装入口已通过测试 provider 验证，见 [11 OP2 实现记录](11-op2-implementation.md)。冻结决议见 [06 D0 接口契约](06-d0-contract.md)，RT API、导出和测试见 [07 RT1](07-rt1-implementation.md)、[08 RT2](08-rt2-implementation.md)、[09 RT3](09-rt3-implementation.md)，Ops 基础设施边界见 [10 OP1 实现记录](10-op1-implementation.md)；类型和分派入口可用不表示稀疏计算可用。
+**D0 / P0 契约已冻结，RT1–RT3 与 OP1–OP3 已完成。** InfiniRT 已通过 `<infini/rt.h>` 提供独立 COO/CSR 描述符和 metadata-only 工厂，正式元数据测试及安装消费者已纳入 CTest。InfiniOps 已接入参数 traits、metadata-only 能力检查、无数据指针的缓存键及 checked 分派入口，稀疏 tuning 保持禁用。生成器保留 sparse 重载及容器类型，C++ 安装入口已通过测试 provider 验证。Python 按 layout 路由，检查 CPU 索引内容，并保活原始组件至同步调用完成。P1 的 ToDense、SparseMm 计算由 OP4 交付。见 [OP2 安装入口](11-op2-implementation.md) 和 [OP3 Python 导入](12-op3-implementation.md)。
 
 ## 结论与范围
 
@@ -25,6 +25,7 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 | [09 RT3 实现记录](09-rt3-implementation.md) | 正式元数据、边界、生命周期测试及 Release / dense / 安装回归 |
 | [10 OP1 实现记录](10-op1-implementation.md) | 参数 traits、checked 分派、metadata cache、禁用 sparse tuning 及验证边界 |
 | [11 OP2 实现记录](11-op2-implementation.md) | 生成器的 dense/sparse 类型、重载、公开实例化及安装消费者验证 |
+| [12 OP3 实现记录](12-op3-implementation.md) | Python 重载路由、原始 COO/CSR 组件、checked import、同步保活与 Release 验证 |
 
 ## 分析基线
 
@@ -55,4 +56,4 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 3. 稀疏结构分析依赖索引内容，不能复用只按 shape / dtype / strides 的缓存。
 4. 稀疏结果的实际 nnz 可能运行后才能确定，必须先定义输出容量、结果元数据和异步完成方式。
 
-决策和可检验的交付条件已在 D0 冻结；RT1–RT3 已完成独立 view、RT 安装导出与正式元数据测试，OP1 已完成 Ops 参数、元数据缓存键和 checked 分派基础设施。OP2 已完成生成器类型分类与公开实例化。Python 桥接、内容校验、计算 provider 与动态输出由 OP3 及后续任务交付。供应商库选择留给相应后端任务。
+RT1–RT3 已完成独立 view、安装导出及正式元数据测试。OP1–OP3 已完成元数据缓存键、checked 分派、公开实例化和 Python 输入桥接。OP4 将 CPU 索引校验接入实际计算 provider，OP5 交付动态输出协议。

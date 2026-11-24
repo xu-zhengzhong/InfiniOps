@@ -69,7 +69,7 @@ CPU 使用 ASan/UBSan 检查 buffer 边界及无效生命周期；GPU 使用可�
 | RT metadata | `tests/test_core.cc`、`test_tensor_view_allocations.cc`、`test_sparse_tensor_view.cc`（RT3 已纳入 CTest） | dense rank 0–8 内联及高 rank 回退不退化，sparse 不隐式转 dense |
 | RT 安装包 | `tests/install_consumer_smoke.cc`、`tests/install_consumer/` | 只用安装前缀和 `<infini/rt.h>` 编译运行 |
 | Ops codegen | 三个 `tests/test_generate_*` 的 wrapper / torch / public header 测试 | sparse 类型不擦除，optional/list 正确，旧 dense 接口稳定 |
-| Ops Python | 新增专用 sparse 测试模块，现有 dense smoke/full suite | layout routing、非 coalesced 导入、动态输出 owner |
+| Ops Python | `tests/test_sparse_python.py`、现有 dense smoke/full suite | OP3 检查 layout routing、未合并 COO、输入校验和组件保活。动态输出 owner 由 OP5 验证 |
 | Ops C++ | `tests/test_cpp_api.py` 及 sparse consumer | `<infini/ops.h>` 导出并链接正确，配套 RT 版本明确 |
 | provider | 原生 CPU/NVIDIA 与可选 ATen slot 8 | unsupported 清楚；实际支持的 case 不被通用 skip 隐藏 |
 
@@ -98,7 +98,7 @@ python -m pytest tests/test_generate_wrappers.py \
   tests/test_generate_torch_ops.py tests/test_cpp_api.py -q
 ```
 
-专用 sparse 测试文件由 OP4–OP6 创建后加入运行清单及 CI；此处不引用尚不存在的测试作为可运行证据。再运行完整 `python -m pytest tests`。ATen/NVIDIA 各使用独立配置，设置 WITH_TORCH/WITH_NVIDIA，验证 provider 选择并记录工具链。纯原生构建不启用 Torch provider，但 Python 对照测试可依赖测试环境的 torch 包。
+设置 `INFINI_OPS_INSTALL_PREFIX` 和 `INFINI_RT_ROOT` 后运行 `python -m pytest tests/test_sparse_python.py -q`，再执行完整 CPU 回归。Python 专项编译带测试 provider 的生成扩展，依赖 pybind11 和 PyTorch。OP4–OP6 将补充实际计算与输出用例。ATen/NVIDIA 各使用独立配置，设置 WITH_TORCH/WITH_NVIDIA，验证 provider 选择并记录工具链。
 
 ## 性能实验与通过标准
 

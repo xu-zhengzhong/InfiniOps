@@ -1371,8 +1371,11 @@ def test_sparse_signature_survives_each_cpp_boundary(spelling, expected):
         assert f"CheckedCall<Tensor, {expected}>" in "\n".join(entries)
     assert module._generate_legacy_c(op, []) == (None, None)
     binding = module._generate_pybind11(op)
-    assert "TensorFromPybind11Handle(" not in binding
-    assert 'm.def("probe"' not in binding
+    assert expected.replace("SparseTensor", "PySparseTensor") + " mask" in binding
+    assert "generated_dispatch::CheckedCallProbe(" in binding
+    assert f"sparse_call.Import<{expected}>(mask, 1)" in binding
+    assert "generated_dispatch::CallProbe(" not in binding
+    assert "TuningManager" not in binding
 
 
 def test_overload_local_dense_conversion_and_defaults(tmp_path, monkeypatch):
@@ -1389,14 +1392,14 @@ class Probe {
     monkeypatch.setattr(module, "_find_base_header", lambda name: header)
     operator = module._parse_operator_header("probe")
     binding = module._generate_pybind11(operator)
-    assert binding.count('m.def("probe"') == 2
+    assert binding.count('m.def("probe"') == 3
     assert "TensorLikeMetadata value" in binding
-    assert "std::optional<std::vector<py::object>> value" in binding
+    assert "std::optional<std::vector<PyDenseTensor>> value" in binding
     assert (
         "NestedTensorFromPybind11Handle<std::optional<std::vector<Tensor>>>(value)"
         in binding
     )
     assert binding.count('py::arg("mode") = 1') == 1
-    assert 'py::arg("mode") = 3' not in binding
+    assert 'py::arg("mode") = 3' in binding
     header, _ = module._generate_operator_call_instantiation_entries(operator)
     assert "Call<Tensor, TensorLikeMetadata, int>" in "\n".join(header)
