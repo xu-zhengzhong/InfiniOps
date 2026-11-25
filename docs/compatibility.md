@@ -79,17 +79,14 @@ Follow these rules when changing public C++ and Python surfaces:
 
 ## Sparse D0 Boundary
 
-The [D0 contract](sparse/06-d0-contract.md) is frozen for implementation; Ops
-sparse types and checked entry points are **not yet available** through the Ops
-public headers or Python package. D0 is documentation-only;
-[RT1](sparse/07-rt1-implementation.md) implements the RT types, and
-[RT2](sparse/08-rt2-implementation.md) exports them through the installed
-`<infini/rt.h>`. [RT3](sparse/09-rt3-implementation.md) adds the formal metadata
-and installed-consumer regression tests. The dependent Ops API remains pending.
-The existing `sparse_sampled_addmm` dense skeleton is not evidence of sparse
-support. OP6 introduces the canonical CSR signature and retains the dense
-overload temporarily for a migration diagnostic, as specified in
-[Operator API Alignment](operator-api-alignment.md#sparse-api-contract-d0-frozen-not-implemented).
+The native CPU build exports `ToDense::CheckedCall` and `SparseMm::CheckedCall`
+through `<infini/ops.h>`. Their Python entry points are `infini.ops.to_dense`
+and `infini.ops.sparse_mm`. They use the installed RT sparse view and support
+two-dimensional COO/CSR with contiguous float32 or float64 values. SparseMm
+takes a dense right operand and an explicit `"sum"` reduction. OP6 covers the
+canonical CSR sampled addmm signature. See the [D0 contract](sparse/06-d0-contract.md),
+[P1 verification](sparse/13-op4-implementation.md) and
+[operator API alignment](operator-api-alignment.md#sparse-api-contract).
 
 `Tensor` remains the dense `TensorView` alias. Sparse support must not alter its
 object layout, hash, equality, or existing dense call signatures. Generators,

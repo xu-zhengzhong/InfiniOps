@@ -630,7 +630,7 @@ class Operator : public OperatorBase {
       return {ValidationCode::kInvalidMetadata};
     } else {
       try {
-        auto result = detail::ValidateSparseArguments(args...);
+        auto result = detail::ValidateSparseArguments<Key>(args...);
         if (!result.ok()) return result;
         const bool automatic =
             config.needs_implementation_resolution() ||
@@ -880,7 +880,7 @@ class Operator : public OperatorBase {
   template <typename... Args>
   static std::unique_ptr<Operator> MakeSparse(const Config& config,
                                               const Args&... args) {
-    const auto status = detail::ValidateSparseArguments(args...);
+    const auto status = detail::ValidateSparseArguments<Key>(args...);
     if (!status.ok()) {
       throw std::invalid_argument("invalid or unsupported sparse metadata");
     }
@@ -893,7 +893,7 @@ class Operator : public OperatorBase {
 
   template <typename... Args>
   static bool CanMakeSparse(const Config& config, const Args&... args) {
-    if (!detail::ValidateSparseArguments(args...).ok()) return false;
+    if (!detail::ValidateSparseArguments<Key>(args...).ok()) return false;
     auto resolved = config.Clone();
     if (config.needs_implementation_resolution()) {
       resolved->set_implementation_index(Config::kAutomaticImplementation);

@@ -68,4 +68,4 @@ def test_public_operator_header_hides_sparse_provider_lookup(tmp_path):
             rf"static\s+[^;{{}}]+\b{name}\s*\([^{{}};]*\)\s*;", public_header
         )
     assert "Provider::checked_call(handle," not in public_header
-    assert "detail::ValidateSparseArguments(args...)" not in public_header
+    assert "detail::ValidateSparseArguments" not in public_header

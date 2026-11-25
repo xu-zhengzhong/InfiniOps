@@ -1,6 +1,6 @@
 # 验证与验收方案
 
-以下是分阶段实现的测试设计，不是运行结果。D0 已完成 [全部 38 项用例的契约走查](06-d0-contract.md#验证样例逐项走查)，并冻结状态、输出和生命周期预期；该记录不替代执行证据。RT 元数据部分已纳入正式测试，见 [RT3 验证记录](09-rt3-implementation.md)；OP4–GPU2 仍待实施。D0 未构建 InfiniOps/InfiniRT，未执行新的稀疏算子。
+以下表格列出各阶段的测试预期。D0 已冻结全部 38 项用例的契约，RT3 已验证元数据，OP4 已从安装后的 C++ 和 Python 入口验证两个固定输出 CPU 算子。具体执行结果见 [D0 契约走查](06-d0-contract.md#验证样例逐项走查)、[RT3 验证记录](09-rt3-implementation.md) 和 [OP4 验收记录](13-op4-implementation.md)。
 
 ## 验证原则
 
@@ -69,8 +69,8 @@ CPU 使用 ASan/UBSan 检查 buffer 边界及无效生命周期；GPU 使用可�
 | RT metadata | `tests/test_core.cc`、`test_tensor_view_allocations.cc`、`test_sparse_tensor_view.cc`（RT3 已纳入 CTest） | dense rank 0–8 内联及高 rank 回退不退化，sparse 不隐式转 dense |
 | RT 安装包 | `tests/install_consumer_smoke.cc`、`tests/install_consumer/` | 只用安装前缀和 `<infini/rt.h>` 编译运行 |
 | Ops codegen | 三个 `tests/test_generate_*` 的 wrapper / torch / public header 测试 | sparse 类型不擦除，optional/list 正确，旧 dense 接口稳定 |
-| Ops Python | `tests/test_sparse_python.py`、现有 dense smoke/full suite | OP3 检查 layout routing、未合并 COO、输入校验和组件保活。动态输出 owner 由 OP5 验证 |
-| Ops C++ | `tests/test_cpp_api.py` 及 sparse consumer | `<infini/ops.h>` 导出并链接正确，配套 RT 版本明确 |
+| Ops Python | `tests/test_sparse_python.py`、`tests/test_sparse_cpu.py`、现有 dense smoke/full suite | OP3 检查导入和保活，OP4 对照 PyTorch 检查实际计算和固定输出。动态输出 owner 由 OP5 验证 |
+| Ops C++ | `tests/test_cpp_api.py` 和 `tests/cpp/sparse_cpu.cc` | 安装后的 `<infini/ops.h>` 可链接并执行原生 provider，Release 返回具体错误 |
 | provider | 原生 CPU/NVIDIA 与可选 ATen slot 8 | unsupported 清楚；实际支持的 case 不被通用 skip 隐藏 |
 
 共享生成器、dispatcher、Python converter 的改动属于高风险基础设施变更。应按仓库贡献规范运行受影响平台的完整构建与测试；smoke 是早期检查，不能作为这些改动最终验收的唯一证据。
@@ -98,7 +98,7 @@ python -m pytest tests/test_generate_wrappers.py \
   tests/test_generate_torch_ops.py tests/test_cpp_api.py -q
 ```
 
-设置 `INFINI_OPS_INSTALL_PREFIX` 和 `INFINI_RT_ROOT` 后运行 `python -m pytest tests/test_sparse_python.py -q`，再执行完整 CPU 回归。Python 专项编译带测试 provider 的生成扩展，依赖 pybind11 和 PyTorch。OP4–OP6 将补充实际计算与输出用例。ATen/NVIDIA 各使用独立配置，设置 WITH_TORCH/WITH_NVIDIA，验证 provider 选择并记录工具链。
+将 `PYTHONPATH` 指向本次安装，设置 `INFINI_OPS_INSTALL_PREFIX` 和 `INFINI_RT_ROOT` 后运行 `python -m pytest tests/test_sparse_python.py tests/test_sparse_cpu.py --devices cpu -q`，再执行完整 CPU 回归。导入专项依赖 pybind11 和 PyTorch，固定输出专项直接使用已安装的原生 CPU provider。ATen/NVIDIA 各使用独立配置，设置 WITH_TORCH/WITH_NVIDIA，验证 provider 选择并记录工具链。
 
 ## 性能实验与通过标准
 

@@ -1,6 +1,6 @@
 # 分阶段执行计划
 
-**P1 还需 OP4 的原生 CPU ToDense 和 SparseMm。** D0 已冻结契约，RT1–RT3 已完成源码实现、安装导出及正式元数据测试。OP1–OP3 已完成 checked 分派、公开实例化、Python 路由与导入验证。见 [D0 决议](06-d0-contract.md)、[RT3 实现记录](09-rt3-implementation.md)、[OP1](10-op1-implementation.md)、[OP2](11-op2-implementation.md) 和 [OP3 实现记录](12-op3-implementation.md)。
+**P1 已完成。** RT1–RT3 提供 COO/CSR 视图，OP1–OP3 提供 checked 分派、公开实例化和 Python 导入。OP4 的原生 CPU ToDense 和 SparseMm 已通过安装后 C++ 与 Python 的数值和错误路径验证。见 [OP4 验收记录](13-op4-implementation.md)。
 
 ## 阶段与交付范围
 
@@ -17,7 +17,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 
 ## 任务拆分与合并顺序
 
-路径以仓库根为起点。RT1–RT3、OP1–OP3 已完成。其余任务的文件名可按仓库命名规范调整，职责和验收条件见表。
+路径以仓库根为起点。RT1–RT3、OP1–OP4 已完成。其余任务的文件名可按仓库命名规范调整，职责和验收条件见表。
 
 | ID | 仓库 / 主要文件 | 交付 | 依赖与验收 |
 | --- | --- | --- | --- |
@@ -28,7 +28,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 | OP1 | `src/tensor.h`、`src/sparse.h`、`src/operator.h`、`src/tuning.h`；公开头生成的新增入口声明化 | **基础设施已完成**：参数 traits、设备/能力检查、无指针 sparse metadata key、checked 分派；禁用 sparse tuning | RT2；layout 区分、每次 checked 调用重验且不复用结构分析、明确错误状态；[实现及验证边界](10-op1-implementation.md) |
 | OP2 | `scripts/generate_wrappers.py`、`scripts/generate_public_operator_header.py` | **已完成**：dense/sparse 类型分类、overload/optional/list 保真、checked 公开实例化 | RT2；安装消费者与 dense 生成对照见 [实现记录](11-op2-implementation.md) |
 | OP3 | `src/pybind11_utils.h`、`src/python/sparse_import.h`、绑定生成与相应测试 | **已完成**。Python 按 layout 路由，同步保活组件，逐次检查 CPU COO/CSR 输入 | OP1–OP2。测试 provider 验证了未合并 COO 的地址、nnz 和标记。见 [实现记录](12-op3-implementation.md) |
-| OP4 | 复用 `src/native/cpu/sparse_validation.h`，新增 `src/base/` 中 ToDense / SparseMm 类及 `src/native/cpu/ops/` provider | CPU float32/64、COO int64、CSR int32/64；稀疏内容检查和固定 shape 输出 | OP1–OP3；P1 完成 |
+| OP4 | `src/base/{to_dense,sparse_mm}.h` 和对应的 `src/native/cpu/ops/` provider，共用 `sparse_matrix.h` 与 `sparse_validation.h` | **已完成**。CPU float32/64、COO int64、CSR int32/64，逐次验证输入并写固定 shape 输出 | OP1–OP3。见 [P1 验收记录](13-op4-implementation.md) |
 | OP5 | 新增 output builder / result metadata、coalesce、转换 providers | Prepare/Execute/Finalize、indices 紧凑打包、Python 显式动态结果返回 | OP4；实际 nnz 和 capacity 不混淆，失败不发布结果 |
 | OP6 | `src/base/sparse_sampled_addmm.h`、`scripts/torch_ops.yaml`、专用 CPU provider | canonical sparse 签名、旧 dense 迁移诊断、保留输入结构 | OP2、OP4；可与 OP5 并行，OP5/OP6 均通过后 P2 完成 |
 | AT1 | 新增 `src/torch/sparse_tensor.h`、手写 `src/torch/ops/` provider；`scripts/generate_torch_ops.py` | 组件级 ATen 包装、stream guard、输出分配保护；防止旧通用生成路径接管 sparse | OP3–OP6；CPU 路径先验，slot 8 不冲突 |
@@ -70,13 +70,13 @@ sparse×sparse 的符号/数值两阶段输出、softmax 对隐式元素的特�
 
 ## 初始能力矩阵
 
-表中是计划目标，不是当前支持状态。D0 冻结的 P2 限制为二维、连续组件、无 batch/hybrid、实数 float32/64；dense operands/out 也必须连续，负 stride 拒绝，所有 value dtype 一致。
+下表标出 P1 已验证的 CPU 能力，并列出后续计划。D0 冻结的 P2 限制为二维、连续组件、无 batch/hybrid、实数 float32/64。稠密操作数和输出也须连续，负步长会被拒绝，所有值类型一致。
 
 | 能力 | CPU P2 | NVIDIA P3 | 其他加速器 |
 | --- | --- | --- | --- |
 | COO / CSR metadata view | 共享 RT 描述 | 共享 RT 描述 | 仅描述不等于能执行 |
-| 完整内容校验 | 目标支持 | 专用设备路径，待实测 | 单独实现/验证 |
-| ToDense / SparseMm | COO/CSR；sum | 同范围逐项交付 | 未声明前拒绝 |
+| 完整内容校验 | P1 已验证 COO 坐标与 coalesced 声明、CSR 行指针与列序 | 专用设备路径，待实测 | 单独实现/验证 |
+| ToDense / SparseMm | P1 已验证 COO/CSR，SparseMm 支持 sum | 同范围逐项交付 | 未声明前拒绝 |
 | Coalesce / COO↔CSR | 目标支持 | workspace / 动态结果协议 | 未声明前拒绝 |
 | sampled_addmm | CSR 固定 pattern | CSR 固定 pattern，待实测 | 未声明前拒绝 |
 | index dtype | COO int64；CSR int32/int64 | 逐 provider 核验，不静默窄化 | 按后端矩阵 |

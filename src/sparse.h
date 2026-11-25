@@ -186,9 +186,21 @@ inline ValidationResult ValidateSparseMetadata(const Tensor& tensor) {
   return {};
 }
 
-// Common P1/P2 metadata policy only. Providers must separately check operator
-// shapes, resources, aliasing and index contents on every checked invocation.
-template <typename... Args>
+// Report operation-specific shape and attribute errors before provider lookup.
+template <typename Key, typename... Args>
+auto ValidateSparseSignature(int, const Args&... args)
+    -> decltype(Key::ValidateSparseSignature(args...)) {
+  return Key::ValidateSparseSignature(args...);
+}
+
+template <typename Key, typename... Args>
+ValidationResult ValidateSparseSignature(long, const Args&...) {
+  return {};
+}
+
+// Metadata only. Providers check resources, aliasing and index contents on
+// every checked invocation.
+template <typename Key = void, typename... Args>
 ValidationResult ValidateSparseArguments(const Args&... args) {
   ValidationResult result;
   std::optional<Device> device;
@@ -243,7 +255,8 @@ ValidationResult ValidateSparseArguments(const Args&... args) {
     ++argument;
   };
   (check_metadata(args), ...);
-  return result;
+  if (!result) return result;
+  return ValidateSparseSignature<Key>(0, args...);
 }
 
 // No data pointers, validation proofs or content-dependent analysis may be
