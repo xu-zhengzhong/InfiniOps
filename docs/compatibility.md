@@ -83,9 +83,11 @@ The native CPU build exports `ToDense::CheckedCall` and `SparseMm::CheckedCall`
 through `<infini/ops.h>`. Their Python entry points are `infini.ops.to_dense`
 and `infini.ops.sparse_mm`. They use the installed RT sparse view and support
 two-dimensional COO/CSR with contiguous float32 or float64 values. SparseMm
-takes a dense right operand and an explicit `"sum"` reduction. OP6 covers the
-canonical CSR sampled addmm signature. See the [D0 contract](sparse/06-d0-contract.md),
-[P1 verification](sparse/13-op4-implementation.md) and
+takes a dense right operand and an explicit `"sum"` reduction. OP5 adds
+caller-owned dynamic COO/CSR output, COO coalescing, and exact-size CSR-to-COO
+conversion. OP6 covers the canonical CSR sampled addmm signature.
+See the [D0 contract](sparse/06-d0-contract.md),
+[P1 verification](sparse/13-op4-implementation.md), [OP5 interfaces and verification](sparse/14-op5-implementation.md) and
 [operator API alignment](operator-api-alignment.md#sparse-api-contract).
 
 `Tensor` remains the dense `TensorView` alias. Sparse support must not alter its

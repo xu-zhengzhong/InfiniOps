@@ -41,6 +41,8 @@ _INDENTATION = "  "
 
 _OP_NAMESPACE_PREFIXES = ("special", "linalg", "fft")
 
+_DYNAMIC_SPARSE_OUTPUTS = {"coalesce", "to_sparse_csr"}
+
 
 def _op_namespace_parts(op_name):
     parts = op_name.split("_")
@@ -884,6 +886,9 @@ def _generate_pybind11(operator):
         '\n#include "triton/jit/pybind11_config.h"' if any(configurable_calls) else ""
     )
     sparse_include = '\n#include "python/sparse_import.h"' if layout_aware else ""
+    if op_name in _DYNAMIC_SPARSE_OUTPUTS:
+        sparse_include = '\n#include "python/sparse_output_builder.h"'
+        callers = f'  BindSparseOutput<Self>(m, "{op_name}");'
 
     return f"""#ifndef INFINI_OPS_BINDINGS_{op_name.upper()}_H_
 #define INFINI_OPS_BINDINGS_{op_name.upper()}_H_
@@ -1316,8 +1321,26 @@ namespace infini::ops::generated_dispatch {{
 """
 
 
-def _generate_generated_dispatch_source(impl_paths, definitions):
+def _sparse_prepare_definition(name):
+    op = _op_class_name(name)
+
+    return f"""ValidationResult {op}::Prepare(const Handle& handle, const Config& config,
+    const SparseTensor& input, const SparsePrepareOptions& options, SparseOutputPlan& plan) {{
+  return plan.Prepare<{op}>(handle, config, input, options);
+}}"""
+
+
+def _generate_generated_dispatch_source(impl_paths, definitions, dynamic_ops=()):
     impl_includes = "\n".join(f'#include "{impl_path}"' for impl_path in impl_paths)
+    prepare = "\n".join(_sparse_prepare_definition(name) for name in dynamic_ops)
+    if prepare:
+        prepare = f"""
+#if !defined(INFINI_OPS_USE_OPERATOR_CALL_INSTANTIATIONS)
+namespace infini::ops {{
+{prepare}
+}}  // namespace infini::ops
+#endif
+"""
 
     return f"""#include "src/operator.h"
 #include "generated_dispatch.h"
@@ -1329,7 +1352,7 @@ def _generate_generated_dispatch_source(impl_paths, definitions):
 // clang-format off
 {impl_includes}
 // clang-format on
-
+{prepare}
 namespace infini::ops::generated_dispatch {{
 
 {chr(10).join(definitions)}
@@ -1542,6 +1565,8 @@ def _generate_operator_call_instantiation_entries(operator):
         + "\n};"
     )
     definitions.extend(dict.fromkeys(factory_definitions))
+    if operator.name in _DYNAMIC_SPARSE_OUTPUTS:
+        definitions.append(_sparse_prepare_definition(operator.name))
 
     return declarations, definitions
 
@@ -2218,7 +2243,14 @@ if __name__ == "__main__":
             for artifact in batch
             for definition in artifact["dispatch_definitions"]
         ]
-        dispatch_source = _generate_generated_dispatch_source(impl_paths, definitions)
+        dynamic_ops = [
+            artifact["op_name"]
+            for artifact in batch
+            if artifact["op_name"] in _DYNAMIC_SPARSE_OUTPUTS
+        ]
+        dispatch_source = _generate_generated_dispatch_source(
+            impl_paths, definitions, dynamic_ops
+        )
         dispatch_source_path = (
             _BINDINGS_DIR / f"generated_dispatch_{dispatch_batch_index}.cc"
         )

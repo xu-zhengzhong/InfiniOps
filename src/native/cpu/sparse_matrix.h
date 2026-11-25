@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "common/sparse_buffers.h"
 #include "dispatcher.h"
 #include "native/cpu/sparse_validation.h"
 
@@ -19,12 +20,7 @@ inline bool SupportsSparseMatrix(const SparseTensor& input) {
 // Common metadata validation has checked contiguity, byte counts and address
 // endpoints for every operand. Empty ranges can have arbitrary addresses.
 inline bool StorageOverlaps(const Tensor& a, const Tensor& b) {
-  const auto a_bytes = a.numel() * a.element_size();
-  const auto b_bytes = b.numel() * b.element_size();
-  const auto a_start = reinterpret_cast<std::uintptr_t>(a.data());
-  const auto b_start = reinterpret_cast<std::uintptr_t>(b.data());
-  return a_bytes && b_bytes && a_start < b_start + b_bytes &&
-         b_start < a_start + a_bytes;
+  return infini::ops::detail::Overlaps(a, b);
 }
 
 namespace detail {

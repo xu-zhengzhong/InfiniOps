@@ -244,10 +244,11 @@ compatibility, testing, and validation requirements.
 ## Sparse API Contract
 
 D0 uses the PyTorch 2.9 public API and v2.9.0 source as its reference.
-The native CPU build implements the two fixed-output operations in the table,
-`ToDense` and `SparseMm`. The plan assigns dynamic conversions and sampled
-addmm to P2. See the [upstream reference](sparse/01-pytorch-reference.md),
-[D0 contract](sparse/06-d0-contract.md) and [OP4 verification](sparse/13-op4-implementation.md).
+The native CPU build implements `ToDense`, `SparseMm`, `Coalesce`,
+`ToSparseCsr` and `ToSparseCoo`. OP6 covers CSR sampled addmm.
+See the [upstream reference](sparse/01-pytorch-reference.md),
+[D0 contract](sparse/06-d0-contract.md), [OP4 verification](sparse/13-op4-implementation.md)
+and [OP5 interfaces and verification](sparse/14-op5-implementation.md).
 
 `Tensor` continues to mean the dense `infini::rt::TensorView`. Sparse inputs
 and fixed-pattern sparse outputs use the independent `SparseTensorView` type;

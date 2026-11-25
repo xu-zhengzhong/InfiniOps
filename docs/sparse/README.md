@@ -1,6 +1,6 @@
 # InfiniOps / InfiniRT 稀疏张量支持：分析与执行方案
 
-**P1 已完成。** 原生 CPU 的 `ToDense` 和 `SparseMm` 可从安装后的 `<infini/ops.h>` 和 Python `infini.ops` 调用。两者支持二维 COO/CSR 和 float32/64，直接将结果写入调用者提供的连续稠密输出。`SparseMm` 接受稠密右矩阵和 `reduce="sum"`。配套 InfiniRT 提供借用组件的稀疏描述符，Python 在同步执行期间保活全部组件。见 [OP4 实现与验收](13-op4-implementation.md)。
+**OP5 已完成。** 安装后的 C++ 和 Python 接口提供原生 CPU 的 COO 合并与二维 COO/CSR 互转。动态输出按实际 `nnz` 发布，保留显式零。P1 已交付 `ToDense` 和 `SparseMm`，P2 剩余的 CSR `sampled_addmm` 由 OP6 承接。见 [OP5 接口与验收](14-op5-implementation.md) 和 [OP4 实现与验收](13-op4-implementation.md)。
 
 ## 结论与范围
 
@@ -27,6 +27,7 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 | [11 OP2 实现记录](11-op2-implementation.md) | 生成器的 dense/sparse 类型、重载、公开实例化及安装消费者验证 |
 | [12 OP3 实现记录](12-op3-implementation.md) | Python 重载路由、原始 COO/CSR 组件、checked import、同步保活与 Release 验证 |
 | [13 OP4 实现记录](13-op4-implementation.md) | ToDense、SparseMm 的原生 CPU 算法、调用方式、错误路径和 P1 验收 |
+| [14 OP5 实现记录](14-op5-implementation.md) | 动态输出三阶段接口、COO 合并、二维格式转换、容量及所有权验收 |
 
 ## 分析基线
 
@@ -57,4 +58,4 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 3. 稀疏结构分析依赖索引内容，不能复用只按 shape / dtype / strides 的缓存。
 4. 稀疏结果的实际 nnz 可能运行后才能确定，必须先定义输出容量、结果元数据和异步完成方式。
 
-RT1–RT3 已交付稀疏视图、安装导出和元数据测试。OP1–OP4 已打通 checked 分派、Python 桥接和两个固定输出 CPU 算子。P2 的动态输出、coalesce、格式转换及 sampled_addmm 分别由 OP5 和 OP6 交付。
+RT1–RT3 已交付稀疏视图、安装导出和元数据测试。OP1–OP5 已打通 checked 分派、Python 桥接、固定输出和动态输出的 CPU 路径。

@@ -25,9 +25,11 @@ device, and strides, but it does not own the memory it references.
 `infini::ops::SparseTensor` names the borrowed `infini::rt::SparseTensorView`
 exported by `<infini/rt.h>`. The installed `<infini/ops.h>` exposes
 `ToDense::CheckedCall` and `SparseMm::CheckedCall` for synchronous CPU
-execution. Both write into a caller-provided dense `Tensor`.
-See the [OP4 implementation](../sparse/13-op4-implementation.md) and the
-[D0 contract](../sparse/06-d0-contract.md).
+execution. Both write into a caller-provided dense `Tensor`. `Coalesce::Prepare`
+and `ToSparseCsr::Prepare` initialize a caller-owned `SparseOutputPlan`.
+`ToSparseCoo::CheckedCall` writes to an exact-size COO output.
+See the [OP4 implementation](../sparse/13-op4-implementation.md),
+[OP5 interfaces](../sparse/14-op5-implementation.md) and [D0 contract](../sparse/06-d0-contract.md).
 
 The sparse view owns logical shape and component metadata and borrows every
 component's data. It has no aggregate `data()` or `strides()`. Initial
