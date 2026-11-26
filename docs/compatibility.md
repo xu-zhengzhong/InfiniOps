@@ -85,9 +85,13 @@ and `infini.ops.sparse_mm`. They use the installed RT sparse view and support
 two-dimensional COO/CSR with contiguous float32 or float64 values. SparseMm
 takes a dense right operand and an explicit `"sum"` reduction. OP5 adds
 caller-owned dynamic COO/CSR output, COO coalescing, and exact-size CSR-to-COO
-conversion. OP6 covers the canonical CSR sampled addmm signature.
+conversion. OP6 adds `SparseSampledAddmm::CheckedCall` and
+`infini.ops.sparse_sampled_addmm(input, mat1, mat2, beta, alpha, out)`.
+Both write the input's CSR pattern and index dtype into caller-owned storage.
+The former dense overload reports how to migrate to CSR.
 See the [D0 contract](sparse/06-d0-contract.md),
-[P1 verification](sparse/13-op4-implementation.md), [OP5 interfaces and verification](sparse/14-op5-implementation.md) and
+[P1 verification](sparse/13-op4-implementation.md), [OP5 interfaces](sparse/14-op5-implementation.md),
+[OP6 verification](sparse/15-op6-implementation.md) and
 [operator API alignment](operator-api-alignment.md#sparse-api-contract).
 
 `Tensor` remains the dense `TensorView` alias. Sparse support must not alter its

@@ -1659,6 +1659,10 @@ def main() -> int:
     ops_by_public_name: dict[str, list[Op]] = collections.defaultdict(list)
 
     for name in op_names:
+        if name == "sparse_sampled_addmm":
+            skipped.append((name, "CSR input and out require a dedicated provider"))
+            continue
+
         candidates = _find_out_entries(aten_entries, name)
 
         if not candidates:

@@ -295,6 +295,168 @@ def test_csr_to_coo_index_width(dtype, index_type):
     assert torch.equal(out.values(), ref.values())
 
 
+def _csr_out(shape, nnz, index_type, dtype):
+    return torch.sparse_csr_tensor(
+        torch.full((shape[0] + 1,), -17, dtype=index_type),
+        torch.full((nnz,), -17, dtype=index_type),
+        torch.full((nnz,), -17, dtype=dtype),
+        shape,
+        check_invariants=False,
+    )
+
+
+@pytest.mark.parametrize("index_type", [torch.int32, torch.int64])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_sampled_addmm_stored_zero(index_type, dtype):
+    mat = torch.sparse_csr_tensor(
+        torch.tensor([0, 2], dtype=index_type),
+        torch.tensor([0, 1], dtype=index_type),
+        torch.tensor([0, 2], dtype=dtype),
+        (1, 2),
+        check_invariants=True,
+    )
+    lhs = torch.tensor([[2, 3]], dtype=dtype)
+    rhs = torch.tensor([[4, 5], [6, 7]], dtype=dtype)
+    out = _csr_out(mat.shape, mat._nnz(), index_type, dtype)
+    pointers = [part.data_ptr() for part in _components(out)]
+    originals = [part.clone() for part in _components(mat)]
+    # PyTorch preserves int32 indices when given an explicit int32 output.
+    ref = torch.sparse.sampled_addmm(mat, lhs, rhs, out=mat.clone())
+    assert ops.sparse_sampled_addmm(mat, lhs, rhs, beta=1, alpha=1, out=out) is None
+    assert out.layout == torch.sparse_csr and out.shape == mat.shape and out._nnz() == 2
+    assert [part.data_ptr() for part in _components(out)] == pointers
+    assert out.values().tolist() == [26, 33]
+
+    for actual, expected in zip(_components(out), _components(ref), strict=True):
+        torch.testing.assert_close(actual, expected)
+
+    for actual, original in zip(_components(mat), originals, strict=True):
+        torch.testing.assert_close(actual, original)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize(
+    "value,left,right,beta,alpha,expected",
+    [
+        (float("nan"), [1], [1], 0, 1, float("nan")),
+        (float("inf"), [1], [1], 0, 1, float("nan")),
+        (2, [float("inf")], [1], 1, 0, float("nan")),
+        (2, [1], [float("nan")], 1, 0, float("nan")),
+        (2, [3], [1], -1, -2, -8),
+        (2, [], [], 3, float("nan"), 6),
+        (float("inf"), [], [], 0, 1, float("nan")),
+    ],
+)
+def test_sampled_addmm_special_values(dtype, value, left, right, beta, alpha, expected):
+    mat = torch.sparse_csr_tensor([0, 1], [0], [value], (1, 1), dtype=dtype)
+    lhs = torch.tensor(left, dtype=dtype).reshape(1, -1)
+    rhs = torch.tensor(right, dtype=dtype).reshape(-1, 1)
+    out = _csr_out(mat.shape, 1, torch.int64, dtype)
+    ops.sparse_sampled_addmm(mat, lhs, rhs, beta, alpha, out, implementation_index=0)
+    ref = torch.sparse.sampled_addmm(mat, lhs, rhs, beta=beta, alpha=alpha)
+    torch.testing.assert_close(out.values(), ref.values(), equal_nan=True)
+    torch.testing.assert_close(
+        out.values(), torch.tensor([expected], dtype=dtype), equal_nan=True
+    )
+    assert torch.equal(out.crow_indices(), mat.crow_indices())
+    assert torch.equal(out.col_indices(), mat.col_indices())
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_sampled_addmm_casts_scalars_to_value_dtype(dtype):
+    mat = torch.ones(1, 1, dtype=dtype).to_sparse_csr()
+    operand = torch.ones(1, 1, dtype=dtype)
+    out = _csr_out(mat.shape, 1, torch.int64, dtype)
+    delta = 2.0**-25
+    for beta, alpha in [(1 + delta, -1), (-1, 1 + delta)]:
+        ops.sparse_sampled_addmm(mat, operand, operand, beta, alpha, out)
+        assert out.values().item() == (0 if dtype == torch.float32 else delta)
+
+
+@pytest.mark.parametrize("shape", [(0, 4), (3, 0), (3, 4), (0, 0)])
+def test_sampled_addmm_empty_pattern(shape):
+    mat = torch.zeros(shape, dtype=torch.float64).to_sparse_csr()
+    out = _csr_out(shape, 0, mat.crow_indices().dtype, mat.dtype)
+    lhs = torch.ones(shape[0], 2, dtype=mat.dtype)
+    rhs = torch.ones(2, shape[1], dtype=mat.dtype)
+    ops.sparse_sampled_addmm(mat, lhs, rhs, 1, 1, out)
+    assert out.shape == shape and out._nnz() == 0
+    assert torch.equal(out.crow_indices(), mat.crow_indices())
+    assert out.col_indices().numel() == out.values().numel() == 0
+
+
+def test_sampled_addmm_reuses_out_and_revalidates_pattern():
+    mat = _matrix(torch.sparse_csr, torch.int32, torch.float64)
+    lhs = torch.randn(4, 9, dtype=mat.dtype)
+    rhs = torch.randn(9, 5, dtype=mat.dtype)
+    out = _csr_out(mat.shape, mat._nnz(), torch.int32, mat.dtype)
+
+    for column in (0, 4):
+        mat.col_indices()[-1] = column
+        ref = torch.sparse.sampled_addmm(
+            mat, lhs, rhs, beta=-0.5, alpha=2, out=mat.clone()
+        )
+        ops.sparse_sampled_addmm(mat, lhs, rhs, -0.5, 2, out)
+        for actual, expected in zip(_components(out), _components(ref), strict=True):
+            torch.testing.assert_close(actual, expected)
+
+    saved = [part.clone() for part in _components(out)]
+    mat.col_indices()[-1] = 5
+    with pytest.raises(IndexError, match=r"IndexOutOfBounds.*argument 0.*col_indices"):
+        ops.sparse_sampled_addmm(mat, lhs, rhs, -0.5, 2, out)
+
+    for actual, expected in zip(_components(out), saved, strict=True):
+        assert torch.equal(actual, expected)
+
+
+def test_sampled_addmm_rejects_unsupported_arguments():
+    mat = _matrix(torch.sparse_csr, torch.int32, torch.float32)
+    lhs = torch.ones(4, 2)
+    rhs = torch.ones(2, 5)
+    out = _csr_out(mat.shape, mat._nnz(), torch.int32, mat.dtype)
+    call = ops.sparse_sampled_addmm
+    with pytest.raises(NotImplementedError, match=r"UnsupportedCapability.*argument 0"):
+        call(mat.to_sparse_coo(), lhs, rhs, 1, 1, out)
+    with pytest.raises(NotImplementedError, match=r"UnsupportedCapability.*argument 5"):
+        call(mat, lhs, rhs, 1, 1, _coo_out(mat.shape, mat._nnz(), mat.dtype))
+    with pytest.raises(TypeError, match=r"InvalidIndexType.*argument 5"):
+        call(
+            mat, lhs, rhs, 1, 1, _csr_out(mat.shape, mat._nnz(), torch.int64, mat.dtype)
+        )
+    with pytest.raises(ValueError, match=r"InvalidMetadata.*argument 5"):
+        call(mat, lhs, rhs, 1, 1, _csr_out((5, 4), mat._nnz(), torch.int32, mat.dtype))
+    with pytest.raises(ValueError, match=r"InvalidMetadata.*argument 5"):
+        call(mat, lhs, rhs, 1, 1, _csr_out(mat.shape, 1, torch.int32, mat.dtype))
+    with pytest.raises(ValueError, match=r"InvalidMetadata.*argument 1"):
+        call(mat, lhs[:3], rhs, 1, 1, out)
+    with pytest.raises(ValueError, match=r"InvalidMetadata.*argument 2"):
+        call(mat, lhs, rhs[:1], 1, 1, out)
+    with pytest.raises(ValueError, match=r"InvalidMetadata.*argument 2"):
+        call(mat, lhs, rhs.double(), 1, 1, out)
+    with pytest.raises(NotImplementedError, match=r"UnsupportedCapability.*argument 1"):
+        call(mat, lhs.view(-1), rhs, 1, 1, out)
+    with pytest.raises(NotImplementedError, match=r"UnsupportedCapability.*argument 2"):
+        call(mat, lhs, torch.ones(5, 2).t(), 1, 1, out)
+    with pytest.raises(NotImplementedError, match="detach"):
+        call(mat, lhs, rhs.detach().requires_grad_(), 1, 1, out)
+    with pytest.raises(ValueError, match="UnsupportedImplementation"):
+        call(mat, lhs, rhs, 1, 1, out, implementation_index=8)
+    with pytest.raises(ValueError, match="Aliasing"):
+        call(mat, lhs, rhs, 1, 1, mat)
+    with pytest.raises(ValueError, match=r"deprecated.*CSR input and out"):
+        call(mat.to_dense(), lhs, rhs, 1, 1, torch.zeros(mat.shape))
+
+    assert all(torch.all(part == -17) for part in _components(out))
+
+
+def test_sampled_addmm_dense_migration_precedes_tensor_import():
+    dense = torch.empty((2, 2), device="meta")
+    args = (dense, dense, dense, 1, 1, dense)
+    for entry in (ops.sparse_sampled_addmm, ops.SparseSampledAddmm):
+        with pytest.raises(ValueError, match=r"deprecated.*CSR input and out"):
+            entry(*args)
+
+
 @pytest.mark.parametrize("shape", [(0, 4), (3, 0), (3, 4), (0, 0)])
 def test_empty_sparse_conversion(shape):
     empty = torch.sparse_coo_tensor(torch.empty(2, 0, dtype=torch.int64), [], shape)

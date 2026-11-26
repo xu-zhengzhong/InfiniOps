@@ -28,8 +28,12 @@ exported by `<infini/rt.h>`. The installed `<infini/ops.h>` exposes
 execution. Both write into a caller-provided dense `Tensor`. `Coalesce::Prepare`
 and `ToSparseCsr::Prepare` initialize a caller-owned `SparseOutputPlan`.
 `ToSparseCoo::CheckedCall` writes to an exact-size COO output.
+`SparseSampledAddmm::CheckedCall` writes a CSR output with the input's shape,
+stored-entry count, value dtype and index dtype. Its three writable components
+must be disjoint from each other and from all inputs.
 See the [OP4 implementation](../sparse/13-op4-implementation.md),
-[OP5 interfaces](../sparse/14-op5-implementation.md) and [D0 contract](../sparse/06-d0-contract.md).
+[OP5 interfaces](../sparse/14-op5-implementation.md), [OP6 interfaces](../sparse/15-op6-implementation.md)
+and [D0 contract](../sparse/06-d0-contract.md).
 
 The sparse view owns logical shape and component metadata and borrows every
 component's data. It has no aggregate `data()` or `strides()`. Initial

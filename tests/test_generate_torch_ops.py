@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -54,6 +55,26 @@ def test_select_op_names_maps_public_names_to_aten_names():
         ["div", "div_", "_log_softmax"],
         config,
     ) == ["div", "div_", "_log_softmax"]
+
+
+def test_sampled_addmm_excludes_generic_torch_provider(tmp_path, monkeypatch, capsys):
+    module = _load_generator_module()
+    name = "sparse_sampled_addmm"
+    assert name not in module.yaml.safe_load(module._OPS_YAML_PATH.read_text())
+    torch_dir = tmp_path / "torch"
+    stale = torch_dir / name / f"{name}.cc"
+    stale.parent.mkdir(parents=True)
+    stale.touch()
+    metadata = tmp_path / "metadata.json"
+    monkeypatch.setattr(module, "_GENERATED_DIR", tmp_path)
+    monkeypatch.setattr(module, "_GENERATED_BASE_DIR", tmp_path / "base")
+    monkeypatch.setattr(module, "_GENERATED_TORCH_DIR", torch_dir)
+    monkeypatch.setattr(module, "_METADATA_PATH", metadata)
+    monkeypatch.setattr(sys, "argv", ["generate_torch_ops.py", "--ops", name])
+    assert module.main() == 0
+    assert "require a dedicated provider" in capsys.readouterr().err
+    assert not stale.exists()
+    assert json.loads(metadata.read_text())["ops"] == []
 
 
 def test_load_aten_entries_uses_packaged_torchgen(monkeypatch):

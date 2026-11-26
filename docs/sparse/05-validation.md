@@ -1,6 +1,6 @@
 # 验证与验收方案
 
-以下表格列出各阶段的测试预期。D0 已冻结全部 38 项用例的契约，RT3 已验证元数据，OP4 已验证两个固定输出 CPU 算子，OP5 已验证动态输出、合并与转换。具体执行结果见 [D0 契约走查](06-d0-contract.md#验证样例逐项走查)、[RT3 验证记录](09-rt3-implementation.md)、[OP4 验收记录](13-op4-implementation.md) 和 [OP5 验收记录](14-op5-implementation.md)。
+以下表格列出各阶段的测试预期。D0 已冻结全部 38 项用例的契约。RT3 验证了元数据，OP4 验证了 ToDense 和 SparseMm，OP5 验证了动态输出、合并与转换，OP6 验证了固定结构 CSR sampled_addmm 的 S17 和 S18。见 [D0 契约走查](06-d0-contract.md#验证样例逐项走查)、[RT3 验证记录](09-rt3-implementation.md)、[OP4 验收记录](13-op4-implementation.md)、[OP5 验收记录](14-op5-implementation.md) 和 [OP6 验收记录](15-op6-implementation.md)。
 
 ## 验证原则
 
@@ -69,7 +69,7 @@ CPU 使用 ASan/UBSan 检查 buffer 边界及无效生命周期；GPU 使用可�
 | RT metadata | `tests/test_core.cc`、`test_tensor_view_allocations.cc`、`test_sparse_tensor_view.cc`（RT3 已纳入 CTest） | dense rank 0–8 内联及高 rank 回退不退化，sparse 不隐式转 dense |
 | RT 安装包 | `tests/install_consumer_smoke.cc`、`tests/install_consumer/` | 只用安装前缀和 `<infini/rt.h>` 编译运行 |
 | Ops codegen | 三个 `tests/test_generate_*` 的 wrapper / torch / public header 测试 | sparse 类型不擦除，optional/list 正确，旧 dense 接口稳定 |
-| Ops Python | `tests/test_sparse_python.py`、`tests/test_sparse_cpu.py`、现有 dense smoke/full suite | OP3 检查导入和保活，OP4 对照 PyTorch 检查实际计算和固定输出。动态输出 owner 由 OP5 验证 |
+| Ops Python | `tests/test_sparse_python.py`、`tests/test_sparse_cpu.py`、现有 dense smoke/full suite | OP3 检查导入和保活，OP4 验证稠密输出，OP5 验证动态输出 owner，OP6 对照 PyTorch 检查 CSR 输出、特殊值与迁移诊断 |
 | Ops C++ | `tests/test_cpp_api.py`、`tests/cpp/sparse_cpu.cc`、`tests/cpp/sparse_output.cc` | 安装后的 `<infini/ops.h>` 可链接并执行原生 provider，Release 返回具体错误 |
 | provider | 原生 CPU/NVIDIA 与可选 ATen slot 8 | unsupported 清楚；实际支持的 case 不被通用 skip 隐藏 |
 

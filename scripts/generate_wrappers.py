@@ -671,10 +671,16 @@ def _generate_pybind11(operator):
         default_impl_index = _default_impl_index_expr(constructor)
 
         return f"""      .def(py::init([]({constructor_params}) {{
-        Config config;
+{_check_dense_migration(8)}        Config config;
         config.set_implementation_index({default_impl_index});
         return std::unique_ptr<Self>{{static_cast<Self*>(generated_dispatch::Make{symbol_name}(config, {_generate_arguments(constructor)}).release())}};
       }}))"""
+
+    def _check_dense_migration(indent):
+        if layout_aware:
+            return " " * indent + "detail::CheckDenseMigration<Self>();\n"
+
+        return ""
 
     def _generate_py_args(node):
         parts = []
@@ -799,6 +805,7 @@ def _generate_pybind11(operator):
                 f'  m.def("{op_name}", []({params}) {{\n'
                 f"    [[maybe_unused]] HostRangeScope host_range_binding_body{{\n"
                 f"        HostRangeLayer::kBindingBody}};\n"
+                f"{_check_dense_migration(4)}"
                 f"    Handle handle;\n"
                 f"    if (stream) {{\n"
                 f"      handle.set_stream(reinterpret_cast<void*>(stream));\n"
@@ -822,7 +829,7 @@ def _generate_pybind11(operator):
         # so rename to `op` to avoid the collision in the generated code.
 
         return f"""      .def("__call__", [](const Self& op, {call_params}) {{
-        return generated_dispatch::Invoke{symbol_name}(op, {call_args});
+{_check_dense_migration(8)}        return generated_dispatch::Invoke{symbol_name}(op, {call_args});
       }})"""
 
     def _overload_order_key(node):

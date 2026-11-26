@@ -76,7 +76,7 @@ RT 工厂只执行 metadata 校验，不读取组件内容、不提交设备工�
 
 ### 首期公共契约
 
-下表是契约级表示，最终声明需经生成器与公共头核查；没有提供可直接运行的实现。
+下表列出契约级签名。原生 CPU 的安装入口和可运行示例见 [OP4](13-op4-implementation.md)、[OP5](14-op5-implementation.md) 和 [OP6](15-op6-implementation.md)。
 
 | 操作 | 上游公共对象 | 建议输入 → 输出 | 对齐/差异 |
 | --- | --- | --- | --- |
@@ -93,7 +93,7 @@ RT 工厂只执行 metadata 校验，不读取组件内容、不提交设备工�
 
 首期 `SparseMm` 接受未 coalesced COO：provider 可以直接按重复条目累加，或在公开 workspace 契约内先 coalesce；不能改变数学含义。非线性 sparse 运算后续必须先处理重复项，例如对重复的 1 和 -1 分别 ReLU 与先合并再 ReLU 结果不同。
 
-`SparseSampledAddmm` 当前 dense 签名不能表达合法 CSR input。新增 sparse 签名为 canonical，旧签名保留迁移诊断，不将 dense 参数猜测成 CSR。先使用手写 sparse ATen provider 或原生 CPU provider，不因 YAML 中存在同名条目就让通用生成器自动接管。
+`SparseSampledAddmm` 的正式入口接受 CSR input 和 CSR out。OP6 已提供原生 CPU provider。旧 dense 重载给出指向 CSR 入口的迁移诊断。通用 Torch 生成器会跳过对这个算子的显式生成请求。
 
 sampled_addmm 按存储坐标计算，显式零仍参与采样。数学表达是每个条目 p 写入 `alpha * dot(mat1[row], mat2[:,col[p]]) + beta * input.values[p]`，保持 input pattern；不能按 `values != 0` 重建 mask。D0 已核验 v2.9.0 CPU 路径没有 beta=0 忽略 input 的分支；NaN/Inf、alpha=0 和空内积按 [特殊值契约](06-d0-contract.md#数值与特殊值冻结) 处理。GPU 必须单独验证，不能套用 dense addmm 的规则。
 

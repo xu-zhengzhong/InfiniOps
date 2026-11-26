@@ -245,10 +245,10 @@ compatibility, testing, and validation requirements.
 
 D0 uses the PyTorch 2.9 public API and v2.9.0 source as its reference.
 The native CPU build implements `ToDense`, `SparseMm`, `Coalesce`,
-`ToSparseCsr` and `ToSparseCoo`. OP6 covers CSR sampled addmm.
+`ToSparseCsr`, `ToSparseCoo` and CSR `SparseSampledAddmm`.
 See the [upstream reference](sparse/01-pytorch-reference.md),
-[D0 contract](sparse/06-d0-contract.md), [OP4 verification](sparse/13-op4-implementation.md)
-and [OP5 interfaces and verification](sparse/14-op5-implementation.md).
+[D0 contract](sparse/06-d0-contract.md), [OP4 verification](sparse/13-op4-implementation.md),
+[OP5 interfaces](sparse/14-op5-implementation.md) and [OP6 verification](sparse/15-op6-implementation.md).
 
 `Tensor` continues to mean the dense `infini::rt::TensorView`. Sparse inputs
 and fixed-pattern sparse outputs use the independent `SparseTensorView` type;
@@ -274,7 +274,7 @@ Finalize. It is not a sparse tensor whose `nnz` equals its allocation capacity.
 | `ToDense`; `Tensor.to_dense` | COO/CSR `input`, dense `out` | **Aligned with C++ adaptation** for the declared same-dtype forward subset. Duplicate COO entries add. The full public contract, including dtype conversion and gradient-related behavior, remains **Needs remediation**, deferred. |
 | `ToSparseCsr` / `ToSparseCoo`; `Tensor.to_sparse_csr` / `Tensor.to_sparse` | COO/CSR `input`, destination components/result last | **Aligned with C++ adaptation** for two-dimensional COO-to-CSR and CSR-to-COO conversion. COO-to-CSR uses dynamic `out_buffer`; CSR-to-COO has known `nnz`. Dense conversion, other layouts, dimensionality options, and autograd remain **Needs remediation**, deferred. |
 | `SparseMm`; `torch.sparse.mm` | Sparse `mat1`, dense `mat2`, `reduce`, dense `out` | **Needs remediation**, deferred outside the first subset: sparse right operands and non-sum reductions are not supported. An explicit trailing output is an accepted C++ adaptation. |
-| `SparseSampledAddmm`; `torch.sparse.sampled_addmm` | CSR `input`, dense `mat1`, dense `mat2`, `beta`, `alpha`, CSR `out` | **Aligned with C++ adaptation** for the declared real forward subset: grouped scalar attributes and caller-owned output. Broader scalar/dtype and autograd coverage remain **Needs remediation**, deferred. The existing dense-only signature is also **Needs remediation** until migrated. |
+| `SparseSampledAddmm` / `torch.sparse.sampled_addmm` | CSR `input`, dense `mat1`, dense `mat2`, `beta`, `alpha`, CSR `out` | **Aligned with C++ adaptation** for the native CPU real forward subset with grouped scalar attributes and caller-owned output. The deprecated dense overload reports a migration diagnostic. Broader scalar/dtype and autograd coverage remain **Needs remediation**, deferred. |
 | Prepare / Execute / Finalize | Inputs and execution attributes, then caller-owned output components and result metadata | **Custom** execution protocol; it has no claimed PyTorch public API equivalent. |
 
 The subset classifications do not classify the entire PyTorch operation as
@@ -318,20 +318,15 @@ Neither `values != 0` nor a dense round trip may define the sampling mask.
 NaN/Inf and zero-scalar behavior must satisfy the special-value contract and
 S18 validation; the finite-value formula alone is not sufficient evidence.
 
-When OP6 introduces the canonical sparse signature, retain the previous
-dense-only overload temporarily as a migration diagnostic. Mark it deprecated
-where supported, name the CSR replacement, and state that removal requires a
-separate breaking change. Dense arguments must receive that diagnostic; they
-must never be guessed to contain CSR components. This requirement does not
-claim that the current dense skeleton can execute a sparse operation.
+OP6 retains the deprecated dense signature. A dense call raises a migration
+diagnostic naming the CSR input and output required by the checked entry point.
+Removing the dense signature requires a separate breaking change.
 
-Python must route by layout before converting arguments. Two overloads that
-both appear as `py::object` are not sufficient to guarantee correct dispatch.
-The old dense route must not intercept a genuine CSR call. The generic Torch
-generator must not claim support from the existing YAML entry: a dedicated
-native or ATen sparse provider must implement the component and output
-contracts, and an ATen provider must preserve or explicitly copy results into
-caller-owned buffers under the documented capacity checks.
+The Python module function routes by layout before converting arguments.
+Native CPU implementation 0 consumes the CSR components and dense operands
+directly. The generic Torch generator skips this operation even when explicitly
+requested. A future ATen provider must write or copy into caller-owned buffers
+under the same capacity and alias checks.
 
 Coalesce and format conversion preserve explicitly stored zeros, including a
 zero produced by adding duplicate values. `nnz` counts stored entries, not

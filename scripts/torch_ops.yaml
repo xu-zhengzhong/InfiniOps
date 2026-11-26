@@ -378,7 +378,6 @@
 - softshrink
 - softshrink_backward
 - sort
-- sparse_sampled_addmm
 - special_airy_ai
 - special_bessel_j0
 - special_bessel_j1

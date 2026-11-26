@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <string_view>
 
 namespace {
 
@@ -151,6 +152,80 @@ bool CheckCsr(DataType index_type, DataType value_type) {
   return true;
 }
 
+bool CheckSampledAddmm() {
+  constexpr auto index_type = DataType::kInt64;
+  constexpr auto value_type = DataType::kFloat64;
+  std::int64_t rows[]{0, 2, 2}, cols[]{0, 2};
+  double values[]{0, 3}, left[]{2, 3, 9, 8}, right[]{4, 5, 1, 6, 7, 2};
+  const Tensor crow{rows, {3}, index_type, cpu};
+  const Tensor col{cols, {2}, index_type, cpu};
+  const Tensor entries{values, {2}, value_type, cpu};
+  const Tensor mat1{left, {2, 2}, value_type, cpu};
+  const Tensor mat2{right, {2, 3}, value_type, cpu};
+  std::optional<SparseTensor> input, out;
+  CHECK(SparseTensor::CreateCsr({2, 3}, crow, col, entries, input));
+  std::array<std::int64_t, 5> out_rows;
+  std::array<std::int64_t, 4> out_cols;
+  std::array<double, 4> out_values;
+  out_rows.fill(-19);
+  out_cols.fill(-19);
+  out_values.fill(-19);
+  const Tensor out_crow{out_rows.data() + 1, {3}, index_type, cpu};
+  const Tensor out_col{out_cols.data() + 1, {2}, index_type, cpu};
+  const Tensor out_entries{out_values.data() + 1, {2}, value_type, cpu};
+  CHECK(SparseTensor::CreateCsr(input->shape(), out_crow, out_col, out_entries,
+                                out));
+  using Op = SparseSampledAddmm;
+  CHECK(Op::CanMake(config, *input, mat1, mat2, 1., 1., *out));
+  CHECK(Op::Make(*input, mat1, mat2, 1., 1., *out));
+  const auto call = [&](const SparseTensor& dst) {
+    return Op::CheckedCall(handle, config, *input, mat1, mat2, 1., 1., dst);
+  };
+  CHECK(call(*out));
+  CHECK((out_rows == std::array<std::int64_t, 5>{-19, 0, 2, 2, -19}));
+  CHECK((out_cols == std::array<std::int64_t, 4>{-19, 0, 2, -19}));
+  CHECK((out_values == std::array<double, 4>{-19, 26, 11, -19}));
+
+  out_rows.fill(-19);
+  out_cols.fill(-19);
+  out_values.fill(-19);
+  cols[1] = 0;
+  CHECK(Matches(call(*out), Code::kInvalidStructure, 0, Component::kColIndices,
+                1));
+  cols[1] = 2;
+  rows[2] = 3;
+  CHECK(Matches(call(*out), Code::kInvalidStructure, 0, Component::kCrowIndices,
+                2));
+  rows[2] = 2;
+  CHECK(Matches(call(*input), Code::kAliasing, 0, Component::kCrowIndices));
+
+  const auto aliases = [&](const Tensor& r, const Tensor& c, const Tensor& v,
+                           std::size_t argument) {
+    std::optional<SparseTensor> overlapping;
+    CHECK(SparseTensor::CreateCsr(input->shape(), r, c, v, overlapping));
+    const auto status = call(*overlapping);
+    return status.code == Code::kAliasing && status.argument == argument;
+  };
+  CHECK(aliases(out_crow, out_col, {cols, {2}, value_type, cpu}, 0));
+  CHECK(aliases({left + 1, {3}, index_type, cpu}, out_col, out_entries, 1));
+  CHECK(aliases(out_crow, out_col, {right + 4, {2}, value_type, cpu}, 2));
+  CHECK(aliases(out_crow, {out_rows.data() + 2, {2}, index_type, cpu},
+                out_entries, 5));
+  CHECK((out_rows == std::array<std::int64_t, 5>{-19, -19, -19, -19, -19}));
+  CHECK((out_cols == std::array<std::int64_t, 4>{-19, -19, -19, -19}));
+  CHECK((out_values == std::array<double, 4>{-19, -19, -19, -19}));
+
+  CHECK(!Op::CanMake(config, mat2, mat1, mat2, 1., 1., mat2));
+  try {
+    Op::Call(mat2, mat1, mat2, 1., 1., mat2);
+    return false;
+  } catch (const std::invalid_argument& error) {
+    CHECK(std::string_view(error.what()).find("CSR input and out") !=
+          std::string_view::npos);
+  }
+  return true;
+}
+
 bool CheckMetadata() {
   const auto type = DataType::kFloat64;
   const Tensor indices{nullptr, {2, 0}, DataType::kInt64, cpu};
@@ -214,6 +289,6 @@ int main() {
       CheckCoo() &&
       CheckCsr<std::int32_t, float>(DataType::kInt32, DataType::kFloat32) &&
       CheckCsr<std::int64_t, double>(DataType::kInt64, DataType::kFloat64) &&
-      CheckMetadata();
+      CheckSampledAddmm() && CheckMetadata();
   return passed ? 0 : 1;
 }

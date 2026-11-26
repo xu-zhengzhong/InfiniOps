@@ -35,6 +35,16 @@ namespace infini::ops::detail {
 template <typename Key>
 struct OperatorFactory;
 
+// Some dense overloads are retained only to point callers to their replacement.
+template <typename Key>
+inline constexpr const char* kDenseMigrationMessage = nullptr;
+
+template <typename Key>
+void CheckDenseMigration() {
+  if constexpr (kDenseMigrationMessage<Key> != nullptr)
+    throw std::invalid_argument(kDenseMigrationMessage<Key>);
+}
+
 // A key with providers covering different domains may opt into metadata-based
 // defaults. Explicit implementation indices and other keys remain unchanged.
 template <typename Key, typename = void>
@@ -933,6 +943,7 @@ class Operator : public OperatorBase {
   }
 
   static Config ImplicitConfig(Device::Type dev_type) {
+    detail::CheckDenseMigration<Key>();
     if (TuningManager::Instance().IsEnabled()) return Config{};
     return DefaultConfig(dev_type);
   }
@@ -979,6 +990,11 @@ class Operator : public OperatorBase {
   static bool SelectWithDevice(const Config& config,
                                Device::Type dispatch_device_type, bool strict,
                                Selected&& selected, Args&&... call_args) {
+    if constexpr (!detail::ContainsSparseArgument<Args...> &&
+                  detail::kDenseMigrationMessage<Key> != nullptr) {
+      if (strict) detail::CheckDenseMigration<Key>();
+      return false;
+    }
     bool matched = false;
 
     if (!detail::ListContains(dispatch_device_type, ActiveDevices<Key>{})) {
