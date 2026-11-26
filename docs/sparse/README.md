@@ -1,6 +1,6 @@
 # InfiniOps / InfiniRT 稀疏张量支持：分析与执行方案
 
-**OP6 已完成，P2 原生 CPU 算子已全部交付。** 安装后的 C++ 和 Python 接口支持固定结构的 CSR `sampled_addmm`。每个已存储坐标都参与采样，包括显式零。输出沿用输入的 shape、行指针、列索引及索引宽度。见 [OP6 接口与验收](15-op6-implementation.md)。
+**AT1 已完成。** 六个 P2 稀疏算子均可在 CPU 上显式选择 ATen implementation 8。默认 CPU 构建提供原生 implementation 0。启用 `WITH_TORCH` 后，两种实现共用安装后的 C++ 和 Python 入口、容量检查和输出所有权契约。见 [AT1 接口与验收](16-at1-implementation.md)。
 
 ## 结论与范围
 
@@ -29,6 +29,7 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 | [13 OP4 实现记录](13-op4-implementation.md) | ToDense、SparseMm 的原生 CPU 算法、调用方式、错误路径和 P1 验收 |
 | [14 OP5 实现记录](14-op5-implementation.md) | 动态输出三阶段接口、COO 合并、二维格式转换、容量及所有权验收 |
 | [15 OP6 实现记录](15-op6-implementation.md) | 固定结构 CSR sampled_addmm、旧 dense 接口迁移、特殊值和 P2 验收 |
+| [16 AT1 实现记录](16-at1-implementation.md) | CPU ATen slot 8、借用组件、临时结果写回、复制开销和异常验收 |
 
 ## 分析基线
 

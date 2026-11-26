@@ -246,6 +246,8 @@ compatibility, testing, and validation requirements.
 D0 uses the PyTorch 2.9 public API and v2.9.0 source as its reference.
 The native CPU build implements `ToDense`, `SparseMm`, `Coalesce`,
 `ToSparseCsr`, `ToSparseCoo` and CSR `SparseSampledAddmm`.
+The optional ATen provider implements the same six checked CPU interfaces in
+slot 8. [AT1 support and verification](sparse/16-at1-implementation.md)
 See the [upstream reference](sparse/01-pytorch-reference.md),
 [D0 contract](sparse/06-d0-contract.md), [OP4 verification](sparse/13-op4-implementation.md),
 [OP5 interfaces](sparse/14-op5-implementation.md) and [OP6 verification](sparse/15-op6-implementation.md).
@@ -325,8 +327,8 @@ Removing the dense signature requires a separate breaking change.
 The Python module function routes by layout before converting arguments.
 Native CPU implementation 0 consumes the CSR components and dense operands
 directly. The generic Torch generator skips this operation even when explicitly
-requested. A future ATen provider must write or copy into caller-owned buffers
-under the same capacity and alias checks.
+requested. CPU ATen implementation 8 computes on a private CSR copy of the
+input and copies the three result components to the checked output buffers.
 
 Coalesce and format conversion preserve explicitly stored zeros, including a
 zero produced by adding duplicate values. `nnz` counts stored entries, not

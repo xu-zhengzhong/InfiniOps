@@ -29,19 +29,9 @@ class Operator<SparseSampledAddmm, Device::Type::kCpu, 0>
     (void)out.crow_indices(out_crow);
     (void)out.col_indices(out_col);
     (void)out.values(out_values);
-    const std::initializer_list<detail::SparseByteRange> writes{
-        *out_crow, *out_col, *out_values};
-    auto status = detail::CheckSparseWrites(input, writes);
-    if (!status) {
-      if (!status.argument) status.argument = 5;
-      return status;
-    }
-    for (const auto& write : writes) {
-      if (detail::Overlaps(write, mat1))
-        return {ValidationCode::kAliasing, ValidationComponent::kValues, {}, 1};
-      if (detail::Overlaps(write, mat2))
-        return {ValidationCode::kAliasing, ValidationComponent::kValues, {}, 2};
-    }
+    auto status = detail::CheckSparseWrites(
+        input, {*out_crow, *out_col, *out_values}, {mat1, mat2}, 5);
+    if (!status) return status;
     status = native::cpu::ValidateSparseIndices(input);
     if (!status) {
       status.argument = 0;

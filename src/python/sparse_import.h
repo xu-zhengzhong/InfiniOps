@@ -129,10 +129,28 @@ inline const char* PythonComponentName(ValidationComponent component) {
   throw py::error_already_set();
 }
 
+// ATen can invoke a Python dispatch hook. Its C++ exception has already been
+// translated by the provider, but PyTorch can leave the thread's Python error
+// set. Consume it before returning a submission or raising the checked error.
+inline ValidationResult ConsumeProviderPythonError(ValidationResult result) {
+  if (!PyErr_Occurred()) return result;
+  py::error_already_set error;
+  if (result.code != ValidationCode::kExecutionFailure) return result;
+  if (error.matches(PyExc_NotImplementedError)) {
+    result.code = ValidationCode::kUnsupportedCapability;
+  } else if (error.matches(PyExc_MemoryError) ||
+             error.matches(py::getattr(py::module_::import("torch"),
+                                       "OutOfMemoryError", py::none()))) {
+    result.code = ValidationCode::kAllocationFailure;
+  }
+  return result;
+}
+
 }  // namespace detail
 
 inline void CheckSparseResult(ValidationResult result) {
-  if (!result.ok()) detail::RaiseSparseError(result);
+  if (!result.ok())
+    detail::RaiseSparseError(detail::ConsumeProviderPythonError(result));
 }
 
 // The binding owns its arguments. Accessors can return temporary Python

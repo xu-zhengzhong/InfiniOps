@@ -81,7 +81,7 @@ ValidationResult WriteCanonical(const SparseTensor& input,
   return {};
 }
 
-ValidationResult ExecuteCpu(const SparseTensor& input,
+ValidationResult ExecuteCpu(void*, const SparseTensor& input,
                             const SparseOutputBuffer& out, void* workspace,
                             std::size_t& actual) {
   auto status = ValidateSparseIndices(input);
@@ -99,32 +99,54 @@ ValidationResult ExecuteCpu(const SparseTensor& input,
 ValidationResult SparseOutputProvider::Prepare(const SparseTensor& input,
                                                TensorLayout layout,
                                                SparseOutputPlan* plan) {
+  const SparseBufferRequirement workspace{
+      NeedsSort(input) ? input.nnz() * sizeof(std::size_t) : 0,
+      alignof(std::size_t)};
+  return PrepareWithKernel(input, layout, plan, ExecuteCpu, nullptr, workspace,
+                           false);
+}
+
+ValidationResult SparseOutputProvider::PrepareWithKernel(
+    const SparseTensor& input, TensorLayout layout, SparseOutputPlan* plan,
+    SparseOutputPlan::Kernel kernel, void* stream,
+    SparseBufferRequirement workspace, bool copies_result) {
   if (!plan) return {Code::kNullData};
   const auto n = input.nnz();
   const bool csr = layout == TensorLayout::kCsr;
   const auto rows = input.shape()[0];
   if (csr && rows >= std::numeric_limits<std::size_t>::max() / sizeof(Index))
     return {Code::kIntegerOverflow, Component::kCrowIndices};
-  auto status = ValidateSparseIndices(input);
-  if (!status) {
-    status.argument = 0;
-    return status;
-  }
   // RT already checked the COO input's index and value byte counts.
   const auto value_size =
       input.dtype() == DataType::kFloat32 ? sizeof(float) : sizeof(double);
   const auto value_align =
       input.dtype() == DataType::kFloat32 ? alignof(float) : alignof(double);
-  plan->requirements_ = {
+  SparseOutputRequirements requirements{
       n,
       {(csr ? rows + 1 : 2 * n) * sizeof(Index), alignof(Index)},
       {csr ? n * sizeof(Index) : 0, alignof(Index)},
       {n * value_size, value_align},
-      {NeedsSort(input) ? n * sizeof(std::size_t) : 0, alignof(std::size_t)},
+      workspace,
       {sizeof(SparseResultMetadata), alignof(SparseResultMetadata)}};
+  if (copies_result) {
+    for (auto part : {requirements.indices, requirements.col_indices,
+                      requirements.values}) {
+      if (part.bytes > std::numeric_limits<std::size_t>::max() -
+                           requirements.result_copy_bytes_upper_bound)
+        return {Code::kIntegerOverflow};
+      requirements.result_copy_bytes_upper_bound += part.bytes;
+    }
+  }
+  auto status = ValidateSparseIndices(input);
+  if (!status) {
+    status.argument = 0;
+    return status;
+  }
   plan->input_.emplace(input);
+  plan->requirements_ = requirements;
   plan->layout_ = layout;
-  plan->kernel_ = ExecuteCpu;
+  plan->stream_ = stream;
+  plan->kernel_ = kernel;
   return {};
 }
 

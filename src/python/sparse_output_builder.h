@@ -44,6 +44,7 @@ class PythonSparseOutput {
     result["values"] = size_align(req.values);
     result["workspace"] = size_align(req.workspace);
     result["result"] = size_align(req.result);
+    result["result_copy_bytes_upper_bound"] = req.result_copy_bytes_upper_bound;
     return result;
   }
 
@@ -85,6 +86,8 @@ class PythonSparseOutput {
     // Python allocation and tensor hooks can run between Prepare and Execute.
     CheckInput();
     CheckSparseResult(plan_.Execute(out, ws, &result_));
+    if (result_.state.load() == SparseCompletion::kFailed)
+      result_.error = detail::ConsumeProviderPythonError(result_.error);
     buffers_.emplace(std::move(buffers));
   }
 

@@ -5,6 +5,27 @@
 
 namespace infini::ops::detail {
 
+// The caller has checked the component capacities for this many entries.
+ValidationResult MakeSparseOutputView(const SparseOutputBuffer& out,
+                                      std::size_t nnz,
+                                      std::optional<SparseTensor>& view);
+
+struct SparseComponents {
+  explicit SparseComponents(const SparseTensor& tensor) {
+    if (tensor.layout() == TensorLayout::kCoo) {
+      (void)tensor.raw_indices(indices);
+    } else {
+      (void)tensor.crow_indices(indices);
+      (void)tensor.col_indices(columns);
+    }
+    (void)tensor.raw_values(values);
+  }
+
+  const Tensor* indices{};
+  const Tensor* columns{};
+  const Tensor* values{};
+};
+
 // All ranges passed to the alias check already have validated endpoints.
 struct SparseByteRange {
   SparseByteRange(const Tensor& t)
@@ -22,17 +43,10 @@ inline bool Overlaps(SparseByteRange a, SparseByteRange b) {
 }
 
 inline ValidationResult CheckSparseWrites(
-    const SparseTensor& input, std::initializer_list<SparseByteRange> writes) {
-  const Tensor* indices = nullptr;
-  const Tensor* columns = nullptr;
-  const Tensor* values = nullptr;
-  if (input.layout() == TensorLayout::kCoo) {
-    (void)input.raw_indices(indices);
-  } else {
-    (void)input.crow_indices(indices);
-    (void)input.col_indices(columns);
-  }
-  (void)input.raw_values(values);
+    const SparseTensor& input, std::initializer_list<SparseByteRange> writes,
+    std::initializer_list<SparseByteRange> dense_inputs = {},
+    std::optional<std::size_t> out_argument = {}) {
+  const auto [indices, columns, values] = SparseComponents(input);
   for (auto w = writes.begin(); w != writes.end(); ++w) {
     if (Overlaps(*w, *indices))
       return {ValidationCode::kAliasing,
@@ -45,8 +59,21 @@ inline ValidationResult CheckSparseWrites(
           ValidationCode::kAliasing, ValidationComponent::kColIndices, {}, 0};
     if (Overlaps(*w, *values))
       return {ValidationCode::kAliasing, ValidationComponent::kValues, {}, 0};
+    std::size_t argument = 1;  // Dense inputs follow the sparse input.
+    for (auto dense : dense_inputs) {
+      if (Overlaps(*w, dense))
+        return {ValidationCode::kAliasing,
+                ValidationComponent::kValues,
+                {},
+                argument};
+      ++argument;
+    }
     for (auto previous = writes.begin(); previous != w; ++previous) {
-      if (Overlaps(*w, *previous)) return {ValidationCode::kAliasing};
+      if (Overlaps(*w, *previous))
+        return {ValidationCode::kAliasing,
+                ValidationComponent::kNone,
+                {},
+                out_argument};
     }
   }
   return {};

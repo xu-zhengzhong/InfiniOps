@@ -1,4 +1,4 @@
-"""Exercise the installed native CPU sparse operators through both public APIs."""
+"""Exercise the installed CPU sparse providers through both public APIs."""
 
 import gc
 import weakref
@@ -11,19 +11,33 @@ import torch
 from tests.test_cpp_api import _compile_cpp, _run
 
 
+SPARSE_CLASSES = (
+    "ToDense",
+    "SparseMm",
+    "Coalesce",
+    "ToSparseCoo",
+    "ToSparseCsr",
+    "SparseSampledAddmm",
+)
+CPU_SLOTS = sorted(
+    {
+        slot
+        for name in SPARSE_CLASSES
+        if hasattr(ops, name)
+        for slot in getattr(ops, name).active_implementation_indices("cpu")
+    }
+)
+
+
 @pytest.fixture(scope="module", autouse=True)
-def native_cpu_build(request):
+def sparse_cpu_build(request):
     devices = request.config.getoption("--devices")
 
     if devices and "cpu" not in devices:
-        pytest.skip("native CPU sparse tests require CPU selection")
+        pytest.skip("CPU sparse tests require CPU selection")
 
-    if not any(
-        0 in cls.active_implementation_indices("cpu")
-        for cls in vars(ops).values()
-        if hasattr(cls, "active_implementation_indices")
-    ):
-        pytest.skip("no native CPU implementation is enabled in this build")
+    if not CPU_SLOTS:
+        pytest.skip("no sparse CPU implementation is enabled in this build")
 
 
 FORMATS = [
@@ -31,6 +45,24 @@ FORMATS = [
     pytest.param(torch.sparse_csr, torch.int32, id="csr32"),
     pytest.param(torch.sparse_csr, torch.int64, id="csr64"),
 ]
+
+# The Torch build installs this file even when only hand-written ops are selected.
+WITH_TORCH = Path(ops.__file__).with_name("torch_ops_metadata.json").is_file()
+UNREGISTERED_SLOT = 31 if 8 in CPU_SLOTS else 8
+
+
+@pytest.fixture(params=CPU_SLOTS)
+def cpu_implementation(request):
+    return request.param
+
+
+def test_sparse_provider_registration():
+    for name in SPARSE_CLASSES:
+        cls = getattr(ops, name)
+        slots = cls.active_implementation_indices("cpu")
+        assert slots == sorted(set(slots))
+        assert set(slots) <= ({0, 8} if WITH_TORCH else {0})
+        assert 8 not in cls.active_implementation_indices("nvidia")
 
 
 def _matrix(layout, index_type, dtype):
@@ -64,7 +96,7 @@ def _components(tensor):
 @pytest.mark.parametrize("layout,index_type", FORMATS)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("width", [0, 1, 7])
-def test_fixed_outputs(layout, index_type, dtype, width):
+def test_fixed_outputs(layout, index_type, dtype, width, cpu_implementation):
     mat = _matrix(layout, index_type, dtype)
     originals = [part.clone() for part in _components(mat)]
     dense = torch.full(mat.shape, float("nan"), dtype=dtype)
@@ -74,8 +106,8 @@ def test_fixed_outputs(layout, index_type, dtype, width):
     product = guarded[1:-1].view(4, width)
     product_ptr = product.data_ptr()
 
-    ops.to_dense(mat, dense)
-    ops.sparse_mm(mat, rhs, "sum", out=product, implementation_index=0)
+    ops.to_dense(mat, dense, implementation_index=cpu_implementation)
+    ops.sparse_mm(mat, rhs, "sum", out=product, implementation_index=cpu_implementation)
     torch.testing.assert_close(dense, mat.to_dense(), rtol=0, atol=0)
     torch.testing.assert_close(product, torch.sparse.mm(mat, rhs), rtol=0, atol=0)
     assert guarded[0] == guarded[-1] == -99
@@ -90,7 +122,7 @@ def test_fixed_outputs(layout, index_type, dtype, width):
 
 @pytest.mark.parametrize("layout,index_type", FORMATS)
 @pytest.mark.parametrize("shape", [(0, 3), (3, 0), (3, 4), (0, 0)])
-def test_zero_stored_entries(layout, index_type, shape):
+def test_zero_stored_entries(layout, index_type, shape, cpu_implementation):
     rows, inner = shape
     values = torch.empty(0, dtype=torch.float64)
 
@@ -109,8 +141,14 @@ def test_zero_stored_entries(layout, index_type, shape):
 
     dense = torch.full(shape, -1, dtype=values.dtype)
     product = torch.full((rows, 2), -1, dtype=values.dtype)
-    ops.to_dense(mat, dense, implementation_index=0)
-    ops.sparse_mm(mat, torch.ones(inner, 2, dtype=values.dtype), "sum", product)
+    ops.to_dense(mat, dense, implementation_index=cpu_implementation)
+    ops.sparse_mm(
+        mat,
+        torch.ones(inner, 2, dtype=values.dtype),
+        "sum",
+        product,
+        implementation_index=cpu_implementation,
+    )
     assert torch.equal(dense, torch.zeros_like(dense))
     assert torch.equal(product, torch.zeros_like(product))
 
@@ -170,7 +208,7 @@ def test_equal_metadata_different_indices(layout, index_type):
 
 
 @pytest.mark.parametrize("layout,index_type", FORMATS)
-def test_explicit_zero_is_multiplied(layout, index_type):
+def test_explicit_zero_is_multiplied(layout, index_type, cpu_implementation):
     rhs = torch.tensor([[float("nan")], [float("inf")]])
     out = torch.empty(2, 1)
 
@@ -185,7 +223,7 @@ def test_explicit_zero_is_multiplied(layout, index_type):
             check_invariants=True,
         )
 
-    ops.sparse_mm(mat, rhs, "sum", out)
+    ops.sparse_mm(mat, rhs, "sum", out, implementation_index=cpu_implementation)
     assert torch.isnan(out[0, 0])
     assert out[1, 0] == 0
 
@@ -210,7 +248,7 @@ def test_capability_shape_and_storage_errors():
     with pytest.raises(NotImplementedError, match="UnsupportedCapability"):
         ops.sparse_mm(mat, rhs.t(), "sum", out)
     with pytest.raises(ValueError, match="UnsupportedImplementation"):
-        ops.sparse_mm(mat, rhs, "sum", out, implementation_index=8)
+        ops.sparse_mm(mat, rhs, "sum", out, implementation_index=UNREGISTERED_SLOT)
     with pytest.raises(NotImplementedError, match="detach"):
         ops.sparse_mm(mat, rhs.detach().requires_grad_(), "sum", out)
     with pytest.raises(ValueError, match="Aliasing"):
@@ -257,15 +295,15 @@ def _coo_out(shape, nnz, dtype):
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_dynamic_conversion_roundtrip(dtype):
+def test_dynamic_conversion_roundtrip(dtype, cpu_implementation):
     mat = _matrix(torch.sparse_coo, torch.int64, dtype)
     original = [part.clone() for part in _components(mat)]
     expected = mat.coalesce()
-    coo = ops.coalesce(mat)
-    csr = ops.to_sparse_csr(mat, implementation_index=0)
+    coo = ops.coalesce(mat, implementation_index=cpu_implementation)
+    csr = ops.to_sparse_csr(mat, implementation_index=cpu_implementation)
     rebuilt = _coo_out(mat.shape, csr._nnz(), dtype)
     ptrs = [part.data_ptr() for part in _components(rebuilt)]
-    ops.to_sparse_coo(csr, out=rebuilt)
+    ops.to_sparse_coo(csr, out=rebuilt, implementation_index=cpu_implementation)
     assert [part.data_ptr() for part in _components(rebuilt)] == ptrs
     assert torch.equal(csr.crow_indices(), torch.tensor([0, 2, 2, 3, 3]))
     assert csr.crow_indices().dtype == csr.col_indices().dtype == torch.int64
@@ -285,10 +323,10 @@ def test_dynamic_conversion_roundtrip(dtype):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("index_type", [torch.int32, torch.int64])
-def test_csr_to_coo_index_width(dtype, index_type):
+def test_csr_to_coo_index_width(dtype, index_type, cpu_implementation):
     mat = _matrix(torch.sparse_csr, index_type, dtype)
     out = _coo_out(mat.shape, mat._nnz(), dtype)
-    ops.to_sparse_coo(mat, out)
+    ops.to_sparse_coo(mat, out, implementation_index=cpu_implementation)
     ref = mat.to_sparse_coo()
     assert out.indices().dtype == torch.int64
     assert torch.equal(out.indices(), ref.indices())
@@ -307,7 +345,7 @@ def _csr_out(shape, nnz, index_type, dtype):
 
 @pytest.mark.parametrize("index_type", [torch.int32, torch.int64])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_sampled_addmm_stored_zero(index_type, dtype):
+def test_sampled_addmm_stored_zero(index_type, dtype, cpu_implementation):
     mat = torch.sparse_csr_tensor(
         torch.tensor([0, 2], dtype=index_type),
         torch.tensor([0, 1], dtype=index_type),
@@ -322,7 +360,18 @@ def test_sampled_addmm_stored_zero(index_type, dtype):
     originals = [part.clone() for part in _components(mat)]
     # PyTorch preserves int32 indices when given an explicit int32 output.
     ref = torch.sparse.sampled_addmm(mat, lhs, rhs, out=mat.clone())
-    assert ops.sparse_sampled_addmm(mat, lhs, rhs, beta=1, alpha=1, out=out) is None
+    assert (
+        ops.sparse_sampled_addmm(
+            mat,
+            lhs,
+            rhs,
+            beta=1,
+            alpha=1,
+            out=out,
+            implementation_index=cpu_implementation,
+        )
+        is None
+    )
     assert out.layout == torch.sparse_csr and out.shape == mat.shape and out._nnz() == 2
     assert [part.data_ptr() for part in _components(out)] == pointers
     assert out.values().tolist() == [26, 33]
@@ -347,12 +396,16 @@ def test_sampled_addmm_stored_zero(index_type, dtype):
         (float("inf"), [], [], 0, 1, float("nan")),
     ],
 )
-def test_sampled_addmm_special_values(dtype, value, left, right, beta, alpha, expected):
+def test_sampled_addmm_special_values(
+    dtype, value, left, right, beta, alpha, expected, cpu_implementation
+):
     mat = torch.sparse_csr_tensor([0, 1], [0], [value], (1, 1), dtype=dtype)
     lhs = torch.tensor(left, dtype=dtype).reshape(1, -1)
     rhs = torch.tensor(right, dtype=dtype).reshape(-1, 1)
     out = _csr_out(mat.shape, 1, torch.int64, dtype)
-    ops.sparse_sampled_addmm(mat, lhs, rhs, beta, alpha, out, implementation_index=0)
+    ops.sparse_sampled_addmm(
+        mat, lhs, rhs, beta, alpha, out, implementation_index=cpu_implementation
+    )
     ref = torch.sparse.sampled_addmm(mat, lhs, rhs, beta=beta, alpha=alpha)
     torch.testing.assert_close(out.values(), ref.values(), equal_nan=True)
     torch.testing.assert_close(
@@ -363,23 +416,34 @@ def test_sampled_addmm_special_values(dtype, value, left, right, beta, alpha, ex
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_sampled_addmm_casts_scalars_to_value_dtype(dtype):
+def test_sampled_addmm_casts_scalars_to_value_dtype(dtype, cpu_implementation):
     mat = torch.ones(1, 1, dtype=dtype).to_sparse_csr()
     operand = torch.ones(1, 1, dtype=dtype)
     out = _csr_out(mat.shape, 1, torch.int64, dtype)
     delta = 2.0**-25
-    for beta, alpha in [(1 + delta, -1), (-1, 1 + delta)]:
-        ops.sparse_sampled_addmm(mat, operand, operand, beta, alpha, out)
-        assert out.values().item() == (0 if dtype == torch.float32 else delta)
+    for beta, alpha in [(1 + delta, -1), (-1, 1 + delta), (1e300, 1), (1, -1e300)]:
+        ops.sparse_sampled_addmm(
+            mat,
+            operand,
+            operand,
+            beta,
+            alpha,
+            out,
+            implementation_index=cpu_implementation,
+        )
+        expected = torch.tensor(beta, dtype=dtype) + torch.tensor(alpha, dtype=dtype)
+        assert out.values().item() == expected.item()
 
 
 @pytest.mark.parametrize("shape", [(0, 4), (3, 0), (3, 4), (0, 0)])
-def test_sampled_addmm_empty_pattern(shape):
+def test_sampled_addmm_empty_pattern(shape, cpu_implementation):
     mat = torch.zeros(shape, dtype=torch.float64).to_sparse_csr()
     out = _csr_out(shape, 0, mat.crow_indices().dtype, mat.dtype)
     lhs = torch.ones(shape[0], 2, dtype=mat.dtype)
     rhs = torch.ones(2, shape[1], dtype=mat.dtype)
-    ops.sparse_sampled_addmm(mat, lhs, rhs, 1, 1, out)
+    ops.sparse_sampled_addmm(
+        mat, lhs, rhs, 1, 1, out, implementation_index=cpu_implementation
+    )
     assert out.shape == shape and out._nnz() == 0
     assert torch.equal(out.crow_indices(), mat.crow_indices())
     assert out.col_indices().numel() == out.values().numel() == 0
@@ -440,7 +504,7 @@ def test_sampled_addmm_rejects_unsupported_arguments():
     with pytest.raises(NotImplementedError, match="detach"):
         call(mat, lhs, rhs.detach().requires_grad_(), 1, 1, out)
     with pytest.raises(ValueError, match="UnsupportedImplementation"):
-        call(mat, lhs, rhs, 1, 1, out, implementation_index=8)
+        call(mat, lhs, rhs, 1, 1, out, implementation_index=UNREGISTERED_SLOT)
     with pytest.raises(ValueError, match="Aliasing"):
         call(mat, lhs, rhs, 1, 1, mat)
     with pytest.raises(ValueError, match=r"deprecated.*CSR input and out"):
@@ -458,12 +522,12 @@ def test_sampled_addmm_dense_migration_precedes_tensor_import():
 
 
 @pytest.mark.parametrize("shape", [(0, 4), (3, 0), (3, 4), (0, 0)])
-def test_empty_sparse_conversion(shape):
+def test_empty_sparse_conversion(shape, cpu_implementation):
     empty = torch.sparse_coo_tensor(torch.empty(2, 0, dtype=torch.int64), [], shape)
-    coo = ops.coalesce(empty)
-    csr = ops.to_sparse_csr(empty)
+    coo = ops.coalesce(empty, implementation_index=cpu_implementation)
+    csr = ops.to_sparse_csr(empty, implementation_index=cpu_implementation)
     out = _coo_out(shape, 0, empty.dtype)
-    ops.to_sparse_coo(csr, out)
+    ops.to_sparse_coo(csr, out, implementation_index=cpu_implementation)
     assert coo.is_coalesced() and out.is_coalesced()
     assert coo.shape == csr.shape == out.shape == shape
     assert coo._nnz() == csr._nnz() == out._nnz() == 0
@@ -471,15 +535,19 @@ def test_empty_sparse_conversion(shape):
 
 
 @pytest.mark.parametrize("prepare", ["prepare_coalesce", "prepare_to_sparse_csr"])
-def test_builder_packing_and_ownership(prepare):
+def test_builder_packing_and_ownership(prepare, cpu_implementation):
     mat = torch.sparse_coo_tensor(
         [[2, 1, 0, 3, 1, 0, 2, 2, 1, 0], [1, 1, 3, 2, 0, 1, 1, 1, 0, 3]],
         [1.0, 2, 3, 4, 5, 6, -1, 0, 2, 1],
         (5, 6),
     )
     ref = mat.coalesce()
-    builder = getattr(ops, prepare)(mat)
+    builder = getattr(ops, prepare)(mat, implementation_index=cpu_implementation)
     req = builder.requirements
+    copied = sum(req[part][0] for part in ("indices", "col_indices", "values"))
+    assert req["result_copy_bytes_upper_bound"] == (
+        copied if cpu_implementation == 8 else 0
+    )
     assert req["nnz_upper_bound"] == 10
     indices = torch.full((req["indices"][0] // 8 + 2,), -99, dtype=torch.int64)
     values = torch.full((12,), -99.0)
@@ -514,14 +582,14 @@ def test_builder_packing_and_ownership(prepare):
     assert torch.equal(result.to_dense(), ref.to_dense())
 
 
-def test_cancellation_and_already_coalesced_output():
+def test_cancellation_and_already_coalesced_output(cpu_implementation):
     mat = torch.sparse_coo_tensor([[1, 1], [2, 2]], [1.0, -1], (3, 4))
-    coo = ops.coalesce(mat)
-    csr = ops.to_sparse_csr(mat)
+    coo = ops.coalesce(mat, implementation_index=cpu_implementation)
+    csr = ops.to_sparse_csr(mat, implementation_index=cpu_implementation)
     assert coo._nnz() == csr._nnz() == 1
     assert torch.equal(coo.indices(), torch.tensor([[1], [2]]))
     assert coo.values().item() == csr.values().item() == 0
-    builder = ops.prepare_coalesce(coo)
+    builder = ops.prepare_coalesce(coo, implementation_index=cpu_implementation)
     assert builder.requirements["workspace"][0] == 0
     builder.execute()
     copied = builder.finalize()
@@ -554,7 +622,7 @@ def test_builder_rejected_resources_and_stale_input():
     with pytest.raises(ValueError, match="InsufficientCapacity"):
         builder.execute(indices=torch.empty(7, dtype=torch.int64), values=guarded)
     with pytest.raises(ValueError, match="InvalidWorkspace"):
-        builder.execute(values=guarded, workspace=torch.empty(1, dtype=torch.uint8))
+        builder.execute(values=guarded, workspace=torch.empty(1, dtype=torch.int32))
     with pytest.raises(ValueError, match="Aliasing"):
         builder.execute(indices=mat._indices(), values=guarded)
     with pytest.raises(NotImplementedError, match="UnsupportedCapability"):
@@ -562,7 +630,7 @@ def test_builder_rejected_resources_and_stale_input():
             indices=torch.empty(5, dtype=torch.int32)
         )
     with pytest.raises(ValueError, match="UnsupportedImplementation"):
-        ops.coalesce(mat, implementation_index=8)
+        ops.coalesce(mat, implementation_index=UNREGISTERED_SLOT)
     with pytest.raises(NotImplementedError, match="UnsupportedLayout"):
         ops.to_sparse_csr(torch.zeros(2, 2))
     with pytest.raises(NotImplementedError, match="UnsupportedCapability"):

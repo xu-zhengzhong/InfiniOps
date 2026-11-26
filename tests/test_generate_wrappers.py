@@ -809,6 +809,31 @@ def test_filter_ops_strict_rejects_unavailable_ops():
         raise AssertionError("strict unknown ops should fail")
 
 
+@pytest.mark.parametrize("with_torch", [False, True])
+def test_sparse_cpu_provider_slots(with_torch, monkeypatch, tmp_path):
+    module = _load_generator_module()
+    monkeypatch.chdir(pathlib.Path(__file__).resolve().parents[1])
+    monkeypatch.setattr(module, "_GENERATION_DIR", tmp_path)
+    ops = module._get_all_ops(["cpu"], with_torch=with_torch)
+    expected = [("native", 0), ("torch", 8)] if with_torch else [("native", 0)]
+
+    for name in (
+        "to_dense",
+        "sparse_mm",
+        "coalesce",
+        "to_sparse_coo",
+        "to_sparse_csr",
+        "sparse_sampled_addmm",
+    ):
+        assert (
+            sorted(
+                (provider.backend, module.ops_config.implementation_slot(provider.path))
+                for provider in ops[name]
+            )
+            == expected
+        )
+
+
 def test_select_ops_from_config_filters_implementation_slots(tmp_path):
     module = _load_generator_module()
     slot_0 = tmp_path / "slot_0.h"

@@ -12,7 +12,6 @@ using Code = ValidationCode;
 using Index = std::int64_t;
 const Device cpu{Device::Type::kCpu};
 const Handle handle;
-const Config config;
 
 #define CHECK(...)                                           \
   do {                                                       \
@@ -22,7 +21,7 @@ const Config config;
     }                                                        \
   } while (false)
 
-bool CheckDynamic() {
+bool CheckDynamic(const Config& config) {
   Index coords[]{2, 1, 0, 3, 1, 0, 2, 2, 1, 0, 1, 1, 3, 2, 0, 1, 1, 1, 0, 3};
   double values[]{1, 2, 3, 4, 5, 6, -1, 0, 2, 1};
   const Tensor indices{coords, {2, 10}, DataType::kInt64, cpu};
@@ -49,8 +48,14 @@ bool CheckDynamic() {
   const auto& req = plan.requirements();
   CHECK(req.nnz_upper_bound == 10 && req.indices.bytes == 160 &&
         req.values.bytes == 80);
-  CHECK(req.workspace.bytes == sizeof(work) &&
-        req.workspace.alignment == alignof(std::size_t));
+  const bool aten = config.implementation_index() == 8;
+  CHECK(req.result_copy_bytes_upper_bound == (aten ? 240 : 0));
+  if (aten) {
+    CHECK(req.workspace.bytes == 0);
+  } else {
+    CHECK(req.workspace.bytes == sizeof(work) &&
+          req.workspace.alignment == alignof(std::size_t));
+  }
   CHECK(req.result.bytes == sizeof(slot) &&
         req.result.alignment == alignof(SparseResultMetadata));
   coord_out.fill(-7);
@@ -134,9 +139,12 @@ bool CheckDynamic() {
   CHECK(rejected(out, workspace,
                  reinterpret_cast<SparseResultMetadata*>(offset), sizeof(slot),
                  Code::kInvalidMetadata));
-  CHECK(rejected(out, {{offset, sizeof(work)}, cpu}, &slot, sizeof(slot),
-                 Code::kInvalidWorkspace));
-  CHECK(rejected(out, {{}, cpu}, &slot, sizeof(slot), Code::kInvalidWorkspace));
+  if (req.workspace.bytes) {
+    CHECK(rejected(out, {{offset, sizeof(work)}, cpu}, &slot, sizeof(slot),
+                   Code::kInvalidWorkspace));
+    CHECK(
+        rejected(out, {{}, cpu}, &slot, sizeof(slot), Code::kInvalidWorkspace));
+  }
   CHECK(rejected(out, {workspace.storage, Device{Device::Type::kCpu, 1}}, &slot,
                  sizeof(slot), Code::kInvalidWorkspace));
   bad = out;
@@ -178,14 +186,14 @@ bool CheckDynamic() {
       Coalesce::Prepare(handle, RequiresConfigAwareProvider{}, *input, {}, plan)
           .code == Code::kNoProvider);
   Config wrong;
-  wrong.set_implementation_index(8);
+  wrong.set_implementation_index(31);
   CHECK(Coalesce::Prepare(handle, wrong, *input, {}, plan).code ==
         Code::kUnsupportedImplementation);
   CHECK(plan.Execute(out, workspace, &slot).code == Code::kInvalidState);
   return true;
 }
 
-bool CheckBoundsAndFixedOutput() {
+bool CheckBoundsAndFixedOutput(const Config& config) {
   std::optional<SparseTensor> input, out;
   const Tensor no_indices{nullptr, {2, 0}, DataType::kInt64, cpu};
   const Tensor no_values{nullptr, {0}, DataType::kFloat32, cpu};
@@ -206,6 +214,28 @@ bool CheckBoundsAndFixedOutput() {
                       {}},
                      {{}, cpu}, &result));
   CHECK(plan.Finalize(out) && out->nnz() == 0);
+  if (config.implementation_index() == 8 && sizeof(std::size_t) == 8) {
+    // This logical product fits the RT view but exceeds ATen's signed numel.
+    const auto rows = static_cast<std::size_t>(std::uint64_t{1} << 32);
+    CHECK(SparseTensor::CreateCoo({rows, std::size_t{1} << 31}, no_indices,
+                                  no_values, input));
+    CHECK(Coalesce::Prepare(handle, config, *input, {}, plan).code ==
+          Code::kIntegerOverflow);
+    CHECK(plan.Finalize(out).error.code == Code::kInvalidState && !out);
+
+    // The component byte counts fit individually. Reject their sum before an
+    // index scan, so this metadata boundary needs no large allocation.
+    const auto n = std::numeric_limits<std::size_t>::max() /
+                       (2 * sizeof(Index) + sizeof(double)) +
+                   1;
+    Index index{};
+    double value{};
+    CHECK(
+        SparseTensor::CreateCoo({1, 1}, {&index, {2, n}, DataType::kInt64, cpu},
+                                {&value, {n}, DataType::kFloat64, cpu}, input));
+    CHECK(Coalesce::Prepare(handle, config, *input, {}, plan).code ==
+          Code::kIntegerOverflow);
+  }
 
   std::int32_t rows32[]{0, 2};
   std::int32_t cols32[]{0, 2};
@@ -243,4 +273,13 @@ bool CheckBoundsAndFixedOutput() {
 
 }  // namespace
 
-int main() { return CheckDynamic() && CheckBoundsAndFixedOutput() ? 0 : 1; }
+int main() {
+  const auto slots = Coalesce::active_implementation_indices(cpu.type());
+  if (slots.empty()) return 1;
+  for (const auto slot : slots) {
+    Config config;
+    config.set_implementation_index(slot);
+    if (!CheckDynamic(config) || !CheckBoundsAndFixedOutput(config)) return 1;
+  }
+  return 0;
+}

@@ -57,24 +57,47 @@ def test_select_op_names_maps_public_names_to_aten_names():
     ) == ["div", "div_", "_log_softmax"]
 
 
-def test_sampled_addmm_excludes_generic_torch_provider(tmp_path, monkeypatch, capsys):
+def test_checked_sparse_ops_exclude_generic_torch_providers(
+    tmp_path, monkeypatch, capsys
+):
     module = _load_generator_module()
-    name = "sparse_sampled_addmm"
-    assert name not in module.yaml.safe_load(module._OPS_YAML_PATH.read_text())
+    names = [
+        "sparse_sampled_addmm",
+        "sparse_mm",
+        "_sparse_mm",
+        "to_dense",
+        "_to_dense",
+        "coalesce",
+        "_coalesce",
+        "to_sparse_csr",
+        "_to_sparse_csr",
+        "to_sparse_coo",
+        "to_sparse",
+        "_to_sparse",
+    ]
+    assert set(names).isdisjoint(
+        module.yaml.safe_load(module._OPS_YAML_PATH.read_text())
+    )
     torch_dir = tmp_path / "torch"
-    stale = torch_dir / name / f"{name}.cc"
-    stale.parent.mkdir(parents=True)
-    stale.touch()
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+
+    for name in names:
+        (torch_dir / name).mkdir(parents=True)
+        (torch_dir / name / f"{name}.cc").touch()
+        (base_dir / f"{name}.h").touch()
+
     metadata = tmp_path / "metadata.json"
     monkeypatch.setattr(module, "_GENERATED_DIR", tmp_path)
-    monkeypatch.setattr(module, "_GENERATED_BASE_DIR", tmp_path / "base")
+    monkeypatch.setattr(module, "_GENERATED_BASE_DIR", base_dir)
     monkeypatch.setattr(module, "_GENERATED_TORCH_DIR", torch_dir)
     monkeypatch.setattr(module, "_METADATA_PATH", metadata)
-    monkeypatch.setattr(sys, "argv", ["generate_torch_ops.py", "--ops", name])
+    monkeypatch.setattr(sys, "argv", ["generate_torch_ops.py", "--ops", *names, "abs"])
     assert module.main() == 0
-    assert "require a dedicated provider" in capsys.readouterr().err
-    assert not stale.exists()
-    assert json.loads(metadata.read_text())["ops"] == []
+    assert capsys.readouterr().err.count("require a dedicated provider") == len(names)
+    assert {path.parent.name for path in torch_dir.rglob("*.cc")} == {"abs"}
+    assert all(not (base_dir / f"{name}.h").exists() for name in names)
+    assert [op["name"] for op in json.loads(metadata.read_text())["ops"]] == ["abs"]
 
 
 def test_load_aten_entries_uses_packaged_torchgen(monkeypatch):

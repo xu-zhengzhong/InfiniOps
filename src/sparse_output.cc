@@ -94,7 +94,7 @@ ValidationResult SparseOutputPlan::Execute(const SparseOutputBuffer& out,
   std::size_t actual = 0;
   ValidationResult status;
   try {
-    status = kernel_(*input_, out, workspace.storage.data, actual);
+    status = kernel_(stream_, *input_, out, workspace.storage.data, actual);
   } catch (const std::bad_alloc&) {
     status = {Code::kAllocationFailure};
   } catch (...) {
@@ -125,22 +125,26 @@ SparseFinalizeResult SparseOutputPlan::Finalize(
   const auto n = result_->actual_nnz;
   if (n > requirements_.nnz_upper_bound)
     return {State::kFailed, {Code::kInsufficientCapacity}};
+  auto status = detail::MakeSparseOutputView(out, n, view);
+  return {status ? State::kSuccess : State::kFailed, status};
+}
+
+ValidationResult detail::MakeSparseOutputView(
+    const SparseOutputBuffer& out, std::size_t n,
+    std::optional<SparseTensor>& view) {
   const Tensor values{out.values.data, std::array{n}, out.dtype, out.device};
-  ValidationResult status;
-  if (layout_ == TensorLayout::kCoo) {
+  if (out.layout == TensorLayout::kCoo) {
     const Tensor indices{out.indices.data, std::array<std::size_t, 2>{2, n},
                          out.index_dtype, out.device};
-    status = FromRtValidation(
+    return FromRtValidation(
         SparseTensor::CreateCoo(out.shape, indices, values, view, true));
-  } else {
-    const Tensor crow{out.indices.data, std::array{out.shape[0] + 1},
-                      out.index_dtype, out.device};
-    const Tensor col{out.col_indices.data, std::array{n}, out.index_dtype,
-                     out.device};
-    status = FromRtValidation(
-        SparseTensor::CreateCsr(out.shape, crow, col, values, view));
   }
-  return {status ? State::kSuccess : State::kFailed, status};
+  const Tensor crow{out.indices.data, std::array{out.shape[0] + 1},
+                    out.index_dtype, out.device};
+  const Tensor col{out.col_indices.data, std::array{n}, out.index_dtype,
+                   out.device};
+  return FromRtValidation(
+      SparseTensor::CreateCsr(out.shape, crow, col, values, view));
 }
 
 }  // namespace infini::ops

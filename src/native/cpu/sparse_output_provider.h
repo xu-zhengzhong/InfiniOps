@@ -8,6 +8,13 @@ namespace infini::ops::native::cpu {
 struct SparseOutputProvider {
   static ValidationResult Prepare(const SparseTensor&, TensorLayout,
                                   SparseOutputPlan*);
+
+  static ValidationResult PrepareWithKernel(const SparseTensor&, TensorLayout,
+                                            SparseOutputPlan*,
+                                            SparseOutputPlan::Kernel,
+                                            void* stream,
+                                            SparseBufferRequirement workspace,
+                                            bool copies_result);
 };
 
 }  // namespace infini::ops::native::cpu

@@ -51,6 +51,18 @@ _METADATA_PATH = _GENERATED_DIR / "torch_ops_metadata.json"
 # claim slots 0-7; PyTorch wrappers always live at 8.
 _PYTORCH_SLOT = 8
 
+# These checked operators wrap sparse components and own their output protocol.
+# ATen also exposes internal spellings such as `_coalesce` and `_to_sparse`.
+_SPARSE_PROVIDER_OPS = {
+    "coalesce",
+    "to_dense",
+    "to_sparse",
+    "to_sparse_coo",
+    "to_sparse_csr",
+    "sparse_mm",
+    "sparse_sampled_addmm",
+}
+
 # ATen uses symbolic names for some `int`/`float` defaults (e.g.
 # `reduction=Mean`). Map them to C++ identifiers usable in a call.
 _ENUM_DEFAULTS = {
@@ -1659,8 +1671,8 @@ def main() -> int:
     ops_by_public_name: dict[str, list[Op]] = collections.defaultdict(list)
 
     for name in op_names:
-        if name == "sparse_sampled_addmm":
-            skipped.append((name, "CSR input and out require a dedicated provider"))
+        if name.lstrip("_") in _SPARSE_PROVIDER_OPS:
+            skipped.append((name, "sparse operands require a dedicated provider"))
             continue
 
         candidates = _find_out_entries(aten_entries, name)

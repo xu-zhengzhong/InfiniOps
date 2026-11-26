@@ -20,6 +20,8 @@ struct SparseBufferRequirement {
 struct SparseOutputRequirements {
   std::size_t nnz_upper_bound{};
   SparseBufferRequirement indices, col_indices, values, workspace, result;
+  // Maximum bytes copied from a provider result into the caller's components.
+  std::size_t result_copy_bytes_upper_bound{};
 };
 
 // The first index buffer holds COO coordinates or CSR row pointers.
@@ -118,10 +120,11 @@ class SparseOutputPlan {
     return Op::CheckedCall(handle, config, input, this);
   }
 
-  using Kernel = ValidationResult (*)(const SparseTensor&,
+  using Kernel = ValidationResult (*)(void*, const SparseTensor&,
                                       const SparseOutputBuffer&, void*,
                                       std::size_t&);
   Kernel kernel_{};
+  void* stream_{};
   std::optional<SparseTensor> input_;
   TensorLayout layout_{TensorLayout::kCoo};
   SparseOutputRequirements requirements_{};

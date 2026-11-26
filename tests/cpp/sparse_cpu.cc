@@ -15,7 +15,6 @@ using Code = ValidationCode;
 using Component = ValidationComponent;
 
 const Device cpu{Device::Type::kCpu};
-const Config config;
 const Handle handle;
 
 #define CHECK(...)                                           \
@@ -32,7 +31,7 @@ bool Matches(ValidationResult r, Code code, std::size_t argument,
          r.position == position;
 }
 
-bool CheckCoo() {
+bool CheckCoo(const Config& config) {
   std::int64_t coords[]{1, 0, 1, 0, 2, 0};
   double values[]{1, 5, 2};
   const Tensor indices{coords, {2, 3}, DataType::kInt64, cpu};
@@ -87,7 +86,7 @@ bool CheckCoo() {
 }
 
 template <typename Index, typename Value>
-bool CheckCsr(DataType index_type, DataType value_type) {
+bool CheckCsr(const Config& config, DataType index_type, DataType value_type) {
   std::array<Index, 4> rows{0, 2, 2, 3}, cols{1, 3, 0};
   std::array<Value, 4> values{2, 0, -3, 9};
   const Tensor crow{rows.data(), {4}, index_type, cpu};
@@ -152,7 +151,7 @@ bool CheckCsr(DataType index_type, DataType value_type) {
   return true;
 }
 
-bool CheckSampledAddmm() {
+bool CheckSampledAddmm(const Config& config) {
   constexpr auto index_type = DataType::kInt64;
   constexpr auto value_type = DataType::kFloat64;
   std::int64_t rows[]{0, 2, 2}, cols[]{0, 2};
@@ -226,7 +225,7 @@ bool CheckSampledAddmm() {
   return true;
 }
 
-bool CheckMetadata() {
+bool CheckMetadata(const Config& config) {
   const auto type = DataType::kFloat64;
   const Tensor indices{nullptr, {2, 0}, DataType::kInt64, cpu};
   const Tensor values{nullptr, {0}, type, cpu};
@@ -285,10 +284,18 @@ bool CheckMetadata() {
 }  // namespace
 
 int main() {
-  const bool passed =
-      CheckCoo() &&
-      CheckCsr<std::int32_t, float>(DataType::kInt32, DataType::kFloat32) &&
-      CheckCsr<std::int64_t, double>(DataType::kInt64, DataType::kFloat64) &&
-      CheckSampledAddmm() && CheckMetadata();
-  return passed ? 0 : 1;
+  const auto slots = ToDense::active_implementation_indices(cpu.type());
+  if (slots.empty()) return 1;
+  for (const auto slot : slots) {
+    Config config;
+    config.set_implementation_index(slot);
+    if (!CheckCoo(config) ||
+        !CheckCsr<std::int32_t, float>(config, DataType::kInt32,
+                                       DataType::kFloat32) ||
+        !CheckCsr<std::int64_t, double>(config, DataType::kInt64,
+                                        DataType::kFloat64) ||
+        !CheckSampledAddmm(config) || !CheckMetadata(config))
+      return 1;
+  }
+  return 0;
 }
