@@ -13,8 +13,8 @@ namespace infini::ops {
 namespace {
 
 ValidationResult ExecuteAtenOutput(void* stream, const SparseTensor& input,
-                                   const SparseOutputBuffer& out, void*,
-                                   std::size_t& actual) {
+                                   const SparseOutputBuffer& out,
+                                   SparseBufferSpan, std::size_t& actual) {
   return aten::WithSparseInput(stream, input, [&](const at::Tensor& source) {
     auto canonical = source.coalesce();
     auto result = out.layout == TensorLayout::kCsr ? canonical.to_sparse_csr()

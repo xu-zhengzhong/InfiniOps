@@ -5,6 +5,15 @@
 
 namespace infini::ops::detail {
 
+struct SparseOutputProvider {
+  using Inspect = ValidationResult (*)(void*, const SparseTensor&,
+                                       SparseBufferRequirement&);
+  static ValidationResult Bind(const SparseTensor&, TensorLayout,
+                               SparseOutputPlan*, SparseOutputPlan::Kernel,
+                               void* stream, SparseBufferRequirement workspace,
+                               bool copies_result, Inspect inspect);
+};
+
 // The caller has checked the component capacities for this many entries.
 ValidationResult MakeSparseOutputView(const SparseOutputBuffer& out,
                                       std::size_t nnz,

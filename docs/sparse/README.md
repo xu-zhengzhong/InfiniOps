@@ -1,5 +1,7 @@
 # InfiniOps / InfiniRT 稀疏张量支持：分析与执行方案
 
+**GPU1 已实现，设备验收待真机。** NVIDIA 原生 slot 0 的六个稀疏算子已通过 CUDA 12.8 编译和安装入口检查。本次机器无法枚举 GPU，设备数值、内存安全和性能仍待实测。见 [GPU1 实现矩阵与验证记录](17-gpu1-implementation.md)。
+
 **AT1 已完成。** 六个 P2 稀疏算子均可在 CPU 上显式选择 ATen implementation 8。默认 CPU 构建提供原生 implementation 0。启用 `WITH_TORCH` 后，两种实现共用安装后的 C++ 和 Python 入口、容量检查和输出所有权契约。见 [AT1 接口与验收](16-at1-implementation.md)。
 
 ## 结论与范围
@@ -30,6 +32,7 @@ D0 确定由 **InfiniRT 提供独立的非拥有型 `SparseTensorView`，由 Inf
 | [14 OP5 实现记录](14-op5-implementation.md) | 动态输出三阶段接口、COO 合并、二维格式转换、容量及所有权验收 |
 | [15 OP6 实现记录](15-op6-implementation.md) | 固定结构 CSR sampled_addmm、旧 dense 接口迁移、特殊值和 P2 验收 |
 | [16 AT1 实现记录](16-at1-implementation.md) | CPU ATen slot 8、借用组件、临时结果写回、复制开销和异常验收 |
+| [17 GPU1 实现记录](17-gpu1-implementation.md) | NVIDIA 原生算子、CUB workspace、同步执行、索引宽度和待真机验收项 |
 
 ## 分析基线
 

@@ -66,6 +66,10 @@ struct SparseResultMetadata {
   std::size_t generation{};
 };
 
+namespace detail {
+struct SparseOutputProvider;
+}
+
 namespace native::cpu {
 
 struct SparseOutputProvider;
@@ -98,6 +102,7 @@ class SparseOutputPlan {
   friend class Coalesce;
   friend class ToSparseCsr;
   friend struct native::cpu::SparseOutputProvider;
+  friend struct detail::SparseOutputProvider;
 
   template <typename Op>
   ValidationResult Prepare(const Handle& handle, const Config& config,
@@ -121,8 +126,8 @@ class SparseOutputPlan {
   }
 
   using Kernel = ValidationResult (*)(void*, const SparseTensor&,
-                                      const SparseOutputBuffer&, void*,
-                                      std::size_t&);
+                                      const SparseOutputBuffer&,
+                                      SparseBufferSpan, std::size_t&);
   Kernel kernel_{};
   void* stream_{};
   std::optional<SparseTensor> input_;

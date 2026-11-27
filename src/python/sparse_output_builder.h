@@ -24,7 +24,7 @@ class PythonSparseOutput {
                                            ? SparseCapacityMode::kCountFirst
                                            : SparseCapacityMode::kUpperBound,
                                        capture};
-    CheckSparseResult(prepare(Handle{}, config, view, options, plan_));
+    CheckSparseResult(prepare(owners_.handle(), config, view, options, plan_));
     shape_ = view.shape();
     dtype_ = view.dtype();
     device_ = view.device();
@@ -51,6 +51,7 @@ class PythonSparseOutput {
   void Execute(py::object indices, py::object col_indices, py::object values,
                py::object workspace) {
     buffers_.reset();
+    owners_.CheckStream();
     CheckInput();
     const auto& req = plan_.requirements();
     const auto i64 = torch_.attr("int64");
@@ -98,7 +99,7 @@ class PythonSparseOutput {
     CheckSparseResult(completion.error);
     if (completion.state == SparseCompletion::kPending)
       detail::RaiseSparseError({ValidationCode::kInvalidState},
-                               "synchronous CPU result is pending");
+                               "synchronous sparse result is pending");
     const auto n = view->nnz();
     const auto prefix = [](const py::object& storage, std::size_t count) {
       return storage.attr("narrow")(0, 0, count);

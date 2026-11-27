@@ -32,7 +32,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 | OP5 | `src/sparse_output.h`、`src/native/cpu/`、`src/python/sparse_output_builder.h` | **已完成**。Coalesce、ToSparseCsr 使用三阶段动态输出，ToSparseCoo 写入精确大小的 COO | OP4。容量、紧凑打包、失败发布和 Python 所有权见 [验收记录](14-op5-implementation.md) |
 | OP6 | `src/base/sparse_sampled_addmm.h`、`scripts/torch_ops.yaml`、专用 CPU provider | **已完成**。CSR sampled_addmm 按存储坐标计算，保留索引宽度和显式零，旧 dense 入口给出迁移提示 | OP2、OP4。固定输出、特殊值、Torch 注册与 P2 回归见 [验收记录](15-op6-implementation.md) |
 | AT1 | `src/torch/sparse_tensor.h`、`src/torch/ops/` 手写 provider、`scripts/generate_torch_ops.py` | **已完成**。六个 CPU 算子在 slot 8 借用稀疏组件，在 stream guard 内调用 ATen 并写回调用方缓冲 | OP3–OP6。slot 0/8 注册、R07 强制重分配和失败后重试见 [AT1 验收](16-at1-implementation.md) |
-| GPU1 | `src/native/cuda/` 对应 NVIDIA provider、CMake 依赖声明 | 验证/转换/SpMM/采样；供应商支持矩阵和 workspace；明确索引降位政策 | P2；可先打通 CSR，逐算子推进 COO，未完成组合显式拒绝 |
+| GPU1 | `src/native/cuda/nvidia/`、Ops CMake、同步 Python 桥接 | **原生 slot 0 已实现，设备验收待真机**。COO/CSR 校验、六个算子、动态 workspace 和索引宽度边界 | P2。CUDA 编译、安装和主机拒绝路径已验证。[实现矩阵与复验命令](17-gpu1-implementation.md) |
 | GPU2 | `src/handle.h` / plan 集成、Python owner 适配；RT 现有通用资源能力按需补齐 | 跨 stream、资源回收、结构 plan、固定结构 capture 能力 | GPU1；启用 ATen provider 时额外依赖 AT1；仅经验证的 provider 声明 capture-safe |
 | EXT1 | RT sparse 表示、Ops layout contract/转换/provider/测试 | CSC、block、hybrid、batch 分批 PR | P3；按单独特性矩阵验收 |
 
@@ -54,7 +54,7 @@ P1 是可独立演示的里程碑；P2 完成后才满足本文定义的 CPU 最
 
 ### P3：设备支持
 
-NVIDIA 先评估已有 ATen 路径验证语义，再接入原生 provider。供应商稀疏库属于 Ops 的依赖，不加到 RT 通用层。当前规划不固定未经验证的库版本或算法；GPU1 需要核验工具链、index width、dtype、算法确定性、workspace、graph capture 等官方能力。
+GPU1 对照 ATen CUDA 实现和 D0 数值契约，采用原生 kernel 和 Toolkit CUB。Ops 管理设备算法和排序 workspace。已编译的工具链、索引宽度、浮点归约顺序及当前 capture 限制见 [GPU1 实现记录](17-gpu1-implementation.md)。
 
 设备内容校验的同步入口明确付出等待成本；受信结构可以避免重复扫描。若使用 GPU 排序/前缀和，所有临时内存纳入 workspace 查询。首次创建 handle/descriptor 和资源预热放在 capture 之前。
 
@@ -70,16 +70,16 @@ sparse×sparse 的符号/数值两阶段输出、softmax 对隐式元素的特�
 
 ## 初始能力矩阵
 
-下表标出 P1 和 P2 已验证的 CPU 能力，并列出后续计划。D0 冻结的 P2 限制为二维、连续组件、无 batch/hybrid、实数 float32/64。稠密操作数和输出也须连续，负步长会被拒绝，所有值类型一致。
+下表标出 P1 和 P2 已验证的 CPU 能力。NVIDIA 列列出 GPU1 实现范围，设备数值仍待真机验收。D0 冻结的 P2 限制为二维、连续组件、无 batch/hybrid、实数 float32/64。稠密操作数和输出也须连续，负步长会被拒绝，所有值类型一致。
 
 | 能力 | CPU P2 | NVIDIA P3 | 其他加速器 |
 | --- | --- | --- | --- |
 | COO / CSR metadata view | 共享 RT 描述 | 共享 RT 描述 | 仅描述不等于能执行 |
-| 完整内容校验 | P1 已验证 COO 坐标与 coalesced 声明、CSR 行指针与列序 | 专用设备路径，待实测 | 单独实现/验证 |
-| ToDense / SparseMm | P1 已验证 COO/CSR，SparseMm 支持 sum | 同范围逐项交付 | 未声明前拒绝 |
-| Coalesce / COO↔CSR | 已验证 float32/64，输出 int64 索引，CSR 输入接受 int32/64 | workspace / 动态结果协议 | 未声明前拒绝 |
-| sampled_addmm | 已验证 CSR 固定结构，float32/64 和 int32/64 索引，含 S17、S18 | CSR 固定 pattern，待实测 | 未声明前拒绝 |
-| index dtype | COO int64；CSR int32/int64 | 逐 provider 核验，不静默窄化 | 按后端矩阵 |
+| 完整内容校验 | P1 已验证 COO 坐标与 coalesced 声明、CSR 行指针与列序 | COO 坐标及规范性声明、CSR 行区间及列序 | 单独实现/验证 |
+| ToDense / SparseMm | P1 已验证 COO/CSR，SparseMm 支持 sum | 原生 COO/CSR，sum | 未声明前拒绝 |
+| Coalesce / COO↔CSR | 已验证 float32/64，输出 int64 索引，CSR 输入接受 int32/64 | CUB 稳定排序与分组，caller-owned workspace | 未声明前拒绝 |
+| sampled_addmm | 已验证 CSR 固定结构，float32/64 和 int32/64 索引，含 S17、S18 | CSR 固定 pattern，按存储坐标计算 | 未声明前拒绝 |
+| index dtype | COO int64；CSR int32/int64 | COO int64，CSR int32/64；需排序时条目数限定为 INT_MAX 以内 | 按后端矩阵 |
 | ATen provider | AT1 已验证六个算子的可选 slot 8 | 待 GPU 内容校验和生命周期验收 | 按设备单独验收 |
 | graph capture | 不作为 CPU 交付要求 | 初始关闭；固定结构且单独验收后开放 | 按后端能力 |
 | autograd | 不支持 | 不支持 | 不支持 |

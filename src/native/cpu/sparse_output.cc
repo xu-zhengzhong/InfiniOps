@@ -2,6 +2,7 @@
 #include <numeric>
 #include <tuple>
 
+#include "common/sparse_buffers.h"
 #include "native/cpu/sparse_output_provider.h"
 #include "native/cpu/sparse_validation.h"
 
@@ -82,16 +83,16 @@ ValidationResult WriteCanonical(const SparseTensor& input,
 }
 
 ValidationResult ExecuteCpu(void*, const SparseTensor& input,
-                            const SparseOutputBuffer& out, void* workspace,
-                            std::size_t& actual) {
+                            const SparseOutputBuffer& out,
+                            SparseBufferSpan workspace, std::size_t& actual) {
   auto status = ValidateSparseIndices(input);
   if (!status) {
     status.argument = 0;
     return status;
   }
   if (input.dtype() == DataType::kFloat32)
-    return WriteCanonical<float>(input, out, workspace, actual);
-  return WriteCanonical<double>(input, out, workspace, actual);
+    return WriteCanonical<float>(input, out, workspace.data, actual);
+  return WriteCanonical<double>(input, out, workspace.data, actual);
 }
 
 }  // namespace
@@ -110,44 +111,13 @@ ValidationResult SparseOutputProvider::PrepareWithKernel(
     const SparseTensor& input, TensorLayout layout, SparseOutputPlan* plan,
     SparseOutputPlan::Kernel kernel, void* stream,
     SparseBufferRequirement workspace, bool copies_result) {
-  if (!plan) return {Code::kNullData};
-  const auto n = input.nnz();
-  const bool csr = layout == TensorLayout::kCsr;
-  const auto rows = input.shape()[0];
-  if (csr && rows >= std::numeric_limits<std::size_t>::max() / sizeof(Index))
-    return {Code::kIntegerOverflow, Component::kCrowIndices};
-  // RT already checked the COO input's index and value byte counts.
-  const auto value_size =
-      input.dtype() == DataType::kFloat32 ? sizeof(float) : sizeof(double);
-  const auto value_align =
-      input.dtype() == DataType::kFloat32 ? alignof(float) : alignof(double);
-  SparseOutputRequirements requirements{
-      n,
-      {(csr ? rows + 1 : 2 * n) * sizeof(Index), alignof(Index)},
-      {csr ? n * sizeof(Index) : 0, alignof(Index)},
-      {n * value_size, value_align},
-      workspace,
-      {sizeof(SparseResultMetadata), alignof(SparseResultMetadata)}};
-  if (copies_result) {
-    for (auto part : {requirements.indices, requirements.col_indices,
-                      requirements.values}) {
-      if (part.bytes > std::numeric_limits<std::size_t>::max() -
-                           requirements.result_copy_bytes_upper_bound)
-        return {Code::kIntegerOverflow};
-      requirements.result_copy_bytes_upper_bound += part.bytes;
-    }
-  }
-  auto status = ValidateSparseIndices(input);
-  if (!status) {
-    status.argument = 0;
-    return status;
-  }
-  plan->input_.emplace(input);
-  plan->requirements_ = requirements;
-  plan->layout_ = layout;
-  plan->stream_ = stream;
-  plan->kernel_ = kernel;
-  return {};
+  return infini::ops::detail::SparseOutputProvider::Bind(
+      input, layout, plan, kernel, stream, workspace, copies_result,
+      [](void*, const SparseTensor& tensor, SparseBufferRequirement&) {
+        auto status = ValidateSparseIndices(tensor);
+        if (!status) status.argument = 0;
+        return status;
+      });
 }
 
 }  // namespace infini::ops::native::cpu

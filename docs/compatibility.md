@@ -97,6 +97,11 @@ See the [D0 contract](sparse/06-d0-contract.md),
 [OP6 verification](sparse/15-op6-implementation.md) and
 [operator API alignment](operator-api-alignment.md#sparse-api-contract).
 
+The NVIDIA build registers native slot 0 for these six forward operators. GPU1
+uses synchronous checked calls, CUDA kernels and Toolkit CUB. Installation and
+metadata checks passed with CUDA 12.8. Device execution is pending hardware
+verification. [GPU1 matrix and verification](sparse/17-gpu1-implementation.md)
+
 `Tensor` remains the dense `TensorView` alias. Sparse support must not alter its
 object layout, hash, equality, or existing dense call signatures. Generators,
 optional/list arguments, dispatch, caches, and Python conversion must preserve

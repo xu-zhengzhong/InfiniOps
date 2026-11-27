@@ -727,15 +727,13 @@ def _generate_pybind11(operator):
                 expr = f"PythonSparseCall::AttributeType({expr}, {position})"
             arguments.append(expr)
 
-        return f"""  m.def("{op_name}", []({_generate_params(call, typed_layouts=True)}, std::uintptr_t stream, std::optional<std::size_t> implementation_index) {{
+        return f"""  m.def("{op_name}", []({_generate_params(call, typed_layouts=True)}, std::optional<std::uintptr_t> stream, std::optional<std::size_t> implementation_index) {{
     [[maybe_unused]] HostRangeScope host_range_binding_body{{HostRangeLayer::kBindingBody}};
-    Handle handle;
-    handle.set_stream(reinterpret_cast<void*>(stream));
     Config config;
     if (implementation_index) config.set_implementation_index(*implementation_index);
-    PythonSparseCall {importer};
-    CheckSparseResult(generated_dispatch::CheckedCall{symbol_name}(handle, config, {", ".join(arguments)}));
-  }}, {_generate_py_args(call)}, py::kw_only(), py::arg("stream") = 0, py::arg("implementation_index") = py::none());"""
+    PythonSparseCall {importer}(stream);
+    CheckSparseResult(generated_dispatch::CheckedCall{symbol_name}({importer}.handle(), config, {", ".join(arguments)}));
+  }}, {_generate_py_args(call)}, py::kw_only(), py::arg("stream") = py::none(), py::arg("implementation_index") = py::none());"""
 
     def _generate_call(op_name, call, method=True, supports_triton_config=False):
         typed_layouts = layout_aware and not method

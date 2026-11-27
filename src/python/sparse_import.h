@@ -157,6 +157,21 @@ inline void CheckSparseResult(ValidationResult result) {
 // objects, so additionally retain every component through the synchronous call.
 class PythonSparseCall {
  public:
+  explicit PythonSparseCall(std::optional<std::uintptr_t> stream = {})
+      : requested_stream_(stream) {
+    handle_.set_stream(reinterpret_cast<void*>(stream.value_or(0)));
+  }
+
+  const Handle& handle() const { return handle_; }
+
+  void CheckStream() const {
+#ifdef WITH_NVIDIA
+    if (stream_device_ && CurrentStream(*stream_device_) != handle_.stream())
+      detail::RaiseSparseError({Code::kUnsupportedCapability},
+                               "execute on the CUDA stream used for prepare");
+#endif
+  }
+
   template <typename T, typename PyArg>
   T Import(const PyArg& obj, std::size_t argument, bool out_only = false) {
     return ConvertNestedTensor<T>(obj, [&](const auto& tensor) {
@@ -174,17 +189,22 @@ class PythonSparseCall {
   using Code = ValidationCode;
   using Component = ValidationComponent;
 
-  static Device ForwardCpuDevice(py::handle obj, std::size_t argument,
-                                 Component component) {
+  static Device ForwardDevice(py::handle obj, std::size_t argument,
+                              Component component) {
     if (obj.attr("requires_grad").cast<bool>()) {
       detail::RaiseSparseError(
           {Code::kAutogradUnsupported, component, {}, argument});
     }
     const auto device = obj.attr("device");
-    if (device.attr("type").cast<std::string>() != "cpu") {
+    const auto name = device.attr("type").cast<std::string>();
+#ifdef WITH_NVIDIA
+    if (name == "cuda")
+      return Device{Device::Type::kNvidia, device.attr("index").cast<int>()};
+#endif
+    if (name != "cpu") {
       detail::RaiseSparseError(
           {Code::kUnsupportedCapability, component, {}, argument},
-          "sparse import requires CPU tensors");
+          "unsupported sparse import device");
     }
     const auto index = device.attr("index");
     return Device{Device::Type::kCpu, index.is_none() ? 0 : index.cast<int>()};
@@ -210,7 +230,7 @@ class PythonSparseCall {
       detail::RaiseSparseError(
           {Code::kUnsupportedLayout, component, {}, argument});
     }
-    const auto device = ForwardCpuDevice(obj, argument, component);
+    const auto device = ForwardDevice(obj, argument, component);
     if (py::hasattr(obj, "is_neg") && obj.attr("is_neg")().cast<bool>()) {
       detail::RaiseSparseError(
           {Code::kUnsupportedCapability, component, {}, argument},
@@ -248,7 +268,7 @@ class PythonSparseCall {
   SparseTensor ImportTensor(const PySparseTensor& tensor, std::size_t argument,
                             bool out_only) {
     const auto layout = detail::GetPythonLayout(tensor);
-    const auto device = ForwardCpuDevice(tensor, argument, Component::kNone);
+    const auto device = ForwardDevice(tensor, argument, Component::kNone);
     const auto shape =
         detail::VectorFromPybind11Handle<Tensor::Shape>(tensor.attr("shape"));
     if (shape.size() != 2 || tensor.attr("sparse_dim")().cast<int>() != 2 ||
@@ -285,6 +305,24 @@ class PythonSparseCall {
       detail::RaiseSparseError(
           {Code::kDeviceMismatch, Component::kComponents, {}, argument});
     }
+#ifdef WITH_NVIDIA
+    if (device.type() == Device::Type::kNvidia) {
+      if (stream_device_ && *stream_device_ != device.index())
+        detail::RaiseSparseError(
+            {Code::kDeviceMismatch, Component::kComponents, {}, argument});
+      stream_device_ = device.index();
+      auto current = CurrentStream(device.index());
+      if (requested_stream_ &&
+          reinterpret_cast<void*>(*requested_stream_) != current)
+        detail::RaiseSparseError(
+            {Code::kUnsupportedCapability, Component::kNone, {}, argument},
+            "select the current PyTorch CUDA stream");
+      handle_.set_stream(current);
+      // The checked NVIDIA provider validates on this stream after alias and
+      // capacity checks. A host validator cannot inspect these components.
+      return *view;
+    }
+#endif
     if (!out_only) {
       auto status = native::cpu::ValidateSparseIndices(*view);
       status.argument = argument;
@@ -293,6 +331,17 @@ class PythonSparseCall {
     return *view;
   }
 
+#ifdef WITH_NVIDIA
+  static void* CurrentStream(int device) {
+    const auto stream = py::module_::import("torch").attr("cuda").attr(
+        "current_stream")(device);
+    return reinterpret_cast<void*>(
+        stream.attr("cuda_stream").cast<std::uintptr_t>());
+  }
+  std::optional<int> stream_device_;
+#endif
+  std::optional<std::uintptr_t> requested_stream_;
+  Handle handle_;
   py::object tensor_type_{py::module_::import("torch").attr("Tensor")};
 
   std::vector<py::object> owners_;

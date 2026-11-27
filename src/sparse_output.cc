@@ -94,7 +94,7 @@ ValidationResult SparseOutputPlan::Execute(const SparseOutputBuffer& out,
   std::size_t actual = 0;
   ValidationResult status;
   try {
-    status = kernel_(stream_, *input_, out, workspace.storage.data, actual);
+    status = kernel_(stream_, *input_, out, workspace.storage, actual);
   } catch (const std::bad_alloc&) {
     status = {Code::kAllocationFailure};
   } catch (...) {
@@ -145,6 +145,48 @@ ValidationResult detail::MakeSparseOutputView(
                    out.device};
   return FromRtValidation(
       SparseTensor::CreateCsr(out.shape, crow, col, values, view));
+}
+
+ValidationResult detail::SparseOutputProvider::Bind(
+    const SparseTensor& input, TensorLayout layout, SparseOutputPlan* plan,
+    SparseOutputPlan::Kernel kernel, void* stream,
+    SparseBufferRequirement workspace, bool copies_result, Inspect inspect) {
+  if (!plan) return {Code::kNullData};
+  const auto n = input.nnz();
+  const bool csr = layout == TensorLayout::kCsr;
+  const auto rows = input.shape()[0];
+  if (csr &&
+      rows >= std::numeric_limits<std::size_t>::max() / sizeof(std::int64_t))
+    return {Code::kIntegerOverflow, Component::kCrowIndices};
+  // RT already checked the COO input's index and value byte counts.
+  const auto value_size =
+      input.dtype() == DataType::kFloat32 ? sizeof(float) : sizeof(double);
+  const auto value_align =
+      input.dtype() == DataType::kFloat32 ? alignof(float) : alignof(double);
+  SparseOutputRequirements requirements{
+      n,
+      {(csr ? rows + 1 : 2 * n) * sizeof(std::int64_t), alignof(std::int64_t)},
+      {csr ? n * sizeof(std::int64_t) : 0, alignof(std::int64_t)},
+      {n * value_size, value_align},
+      workspace,
+      {sizeof(SparseResultMetadata), alignof(SparseResultMetadata)}};
+  if (copies_result) {
+    for (auto part : {requirements.indices, requirements.col_indices,
+                      requirements.values}) {
+      if (part.bytes > std::numeric_limits<std::size_t>::max() -
+                           requirements.result_copy_bytes_upper_bound)
+        return {Code::kIntegerOverflow};
+      requirements.result_copy_bytes_upper_bound += part.bytes;
+    }
+  }
+  auto status = inspect(stream, input, requirements.workspace);
+  if (!status) return status;
+  plan->input_.emplace(input);
+  plan->requirements_ = requirements;
+  plan->layout_ = layout;
+  plan->stream_ = stream;
+  plan->kernel_ = kernel;
+  return {};
 }
 
 }  // namespace infini::ops

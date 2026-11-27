@@ -71,7 +71,7 @@ CPU 使用 ASan/UBSan 检查 buffer 边界及无效生命周期；GPU 使用可�
 | Ops codegen | 三个 `tests/test_generate_*` 的 wrapper / torch / public header 测试 | sparse 类型不擦除，optional/list 正确，旧 dense 接口稳定 |
 | Ops Python | `tests/test_sparse_python.py`、`tests/test_sparse_cpu.py`、现有 dense smoke/full suite | OP3 检查导入和保活，OP4 验证稠密输出，OP5 验证动态输出 owner，OP6 对照 PyTorch 检查 CSR 输出、特殊值与迁移诊断 |
 | Ops C++ | `tests/test_cpp_api.py`、`tests/cpp/sparse_cpu.cc`、`tests/cpp/sparse_output.cc` | 安装后的 `<infini/ops.h>` 可链接并执行原生 provider，Release 返回具体错误 |
-| provider | 原生 CPU、可选 CPU ATen slot 8 和后续 NVIDIA provider | AT1 的 `tests/test_sparse_aten.py` 检查原始组件地址、R07 临时 CSR 强制重分配、异常映射及重试。C++ 消费者逐个执行已注册的 CPU slot。见 [验收记录](16-at1-implementation.md)。 |
+| provider | 原生 CPU、可选 CPU ATen slot 8、原生 NVIDIA slot 0 | AT1 的 `tests/test_sparse_aten.py` 检查原始组件地址、R07 临时 CSR 强制重分配、异常映射及重试。C++ 消费者逐个执行已注册的 CPU slot。见 [AT1 验收记录](16-at1-implementation.md)。GPU1 安装端、设备测试及状态见 [NVIDIA 验收记录](17-gpu1-implementation.md)。 |
 
 共享生成器、dispatcher、Python converter 的改动属于高风险基础设施变更。应按仓库贡献规范运行受影响平台的完整构建与测试；smoke 是早期检查，不能作为这些改动最终验收的唯一证据。
 

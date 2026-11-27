@@ -110,6 +110,13 @@ if(WITH_CPU)
 endif()
 
 if(WITH_NVIDIA)
+    find_path(INFINI_OPS_CUB_INCLUDE_DIR cub/device/device_radix_sort.cuh
+        PATHS ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES cccl NO_DEFAULT_PATH REQUIRED)
+    target_include_directories(infiniops PRIVATE "${INFINI_OPS_CUB_INCLUDE_DIR}")
+    # Preserve the separately rounded products in sampled_addmm, including
+    # overflow followed by addition of an infinity of the opposite sign.
+    set_source_files_properties(native/cuda/nvidia/sparse_matrix.cu
+        PROPERTIES COMPILE_OPTIONS "--fmad=false")
     if(NOT TARGET nvidia::cutlass::cutlass)
         find_package(NvidiaCutlass 4.4.1 EXACT CONFIG QUIET)
     endif()

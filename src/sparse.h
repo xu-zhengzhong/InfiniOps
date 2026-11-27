@@ -227,7 +227,11 @@ ValidationResult ValidateSparseArguments(const Args&... args) {
   (check_device(args), ...);
   if (!result) return result;
   if (!device) return {ValidationCode::kInvalidMetadata};
-  if (device->type() != Device::Type::kCpu) {
+  if (device->type() != Device::Type::kCpu
+#ifdef WITH_NVIDIA
+      && device->type() != Device::Type::kNvidia
+#endif
+  ) {
     return {ValidationCode::kUnsupportedCapability};
   }
   argument = 0;
